@@ -46,6 +46,6 @@ jobs:
           prerelease: false
           title: "Latest: ${{needs.prepare.outputs.created}}"
           files: |
-            /tmp/workdir/output/*.gitshallow
-            /tmp/workdir/output/*.gitbundle
+            /tmp/workdir/kernel/output/*.gitshallow
+            /tmp/workdir/kernel/output/*.gitbundle
 
