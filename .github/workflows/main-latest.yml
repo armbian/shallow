@@ -3,25 +3,14 @@ name: main-latest
 on:
   push:
     branches: [ main ]
+  schedule:
+    - cron: '0 3 * * *' # Scheduled runs every day at 3am UTC
 
 jobs:
 
-  prepare:
+  git-trees:
     runs-on: ubuntu-latest
     steps:
-      - name: Prepare release ID
-        id: prep
-        run: |
-          echo ::set-output name=created::$(date -u +'%Y%m%d-%H%M')
-    outputs:
-      created: ${{ steps.prep.outputs.created }} # refer to as ${{needs.prepare.outputs.created}}
-
-
-  build:
-    needs: [ prepare ]
-    runs-on: ubuntu-latest # soon to support hosted runners for arm64
-    steps:
-
       - name: Checkout
         uses: actions/checkout@v2
 
@@ -37,14 +26,13 @@ jobs:
         run: |
           BASE_WORK_DIR="/tmp/workdir" bash shallow_kernel_tree.sh
 
-
       - name: "GH latest release"
         uses: "marvinpinto/action-automatic-releases@latest"
         with:
           repo_token: "${{ secrets.GITHUB_TOKEN }}"
           automatic_release_tag: "latest"
           prerelease: false
-          title: "Latest: ${{needs.prepare.outputs.created}}"
+          title: "Latest kernel shallow git trees"
           files: |
             /tmp/workdir/kernel/output/*.gitshallow
             /tmp/workdir/kernel/output/*.gitbundle

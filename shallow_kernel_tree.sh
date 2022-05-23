@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 
 set -e
-set -x
 
-# source the lib
-. lib_git.sh
+function display_alert() {
+	echo "--> $*"
+}
+
+function run_host_command_logged() {
+	echo "==> $*"
+	"$@"
+}
+
+echo "::group::Prepare basics"
 
 ONLINE="yes"
 
@@ -31,7 +38,6 @@ GIT_TORVALDS_BUNDLE_ID="$(echo -n "${GIT_TORVALDS_BUNDLE_URL}" | md5sum | awk '{
 GIT_TORVALDS_BUNDLE_FILE="${KERNEL_TORVALDS_BUNDLE_DIR}/${GIT_TORVALDS_BUNDLE_ID}.gitbundle" # final filename of bundle
 GIT_TORVALDS_BUNDLE_REMOTE_NAME="torvalds-gitbundle"                                         # name of the remote that will point to bundle
 
-# TORVALDS LIVE info
 GIT_TORVALDS_LIVE_GIT_URL="git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
 GIT_TORVALDS_LIVE_REMOTE_NAME="torvalds-live"
 
@@ -39,14 +45,9 @@ GIT_STABLE_LIVE_GIT_URL="git://git.kernel.org/pub/scm/linux/kernel/git/stable/li
 GIT_STABLE_LIVE_REMOTE_NAME="stable-live"
 
 # Versions we're interested in, array
-declare -ag WANTED_KERNEL_VERSIONS=("5.18" "5.17" "5.15" "5.12" "5.10")
-
-# Minimal version
-
-# Kernel versions: 5.18, 5.17, 5.15, 5.10, 4.19, 4.9, 4.4
+declare -ag WANTED_KERNEL_VERSIONS=("5.18" "5.17" "5.15" "5.10" "4.19" "4.9" "4.4")
 
 # 1st stage Global:
-
 # Init an empty git repo
 # Fetch from Torvalds bundle (very slow) into 'torvalds-gitbundle' branch
 # include tags?
@@ -57,19 +58,33 @@ else
 	display_alert "Git tree already initted"
 fi
 
+echo "::endgroup::"
+echo "::group::Fetching Torvalds bundle"
+
 ## From now on, everything is done inside the git worktree...
 cd "${KERNEL_GIT_TREE}" || exit 2
 
 if ! git config "remote.${GIT_TORVALDS_BUNDLE_REMOTE_NAME}.url"; then
 	# Grab torvald's gitbundle via http from kernel.org
-	download_git_bundle_from_http "${GIT_TORVALDS_BUNDLE_FILE}" "${GIT_TORVALDS_BUNDLE_URL}"
+	if [[ ! -f "${GIT_TORVALDS_BUNDLE_FILE}" ]]; then # Download the bundle file if it does not exist.
+		display_alert "Downloading Git cold bundle via HTTP" "${GIT_TORVALDS_BUNDLE_URL}"
+		run_host_command_logged wget --continue --progress=dot:giga --output-document="${GIT_TORVALDS_BUNDLE_FILE}" "${GIT_TORVALDS_BUNDLE_URL}"
+	else
+		display_alert "Cold bundle file exists, using it" "${GIT_TORVALDS_BUNDLE_FILE}" "git"
+	fi
+
 	display_alert "Fetching from cold git bundle, wait" "${GIT_TORVALDS_BUNDLE_ID}"
-	git_fetch_from_bundle_file "${GIT_TORVALDS_BUNDLE_FILE}" "${GIT_TORVALDS_BUNDLE_REMOTE_NAME}"
+	git bundle verify "${GIT_TORVALDS_BUNDLE_FILE}"                                   # Make sure bundle is valid.
+	git remote add "${GIT_TORVALDS_BUNDLE_REMOTE_NAME}" "${GIT_TORVALDS_BUNDLE_FILE}" # Add the remote pointing to the cold bundle file
+	git fetch --progress --verbose "${GIT_TORVALDS_BUNDLE_REMOTE_NAME}"               # Fetch it!
 else
 	display_alert "Torvalds bundle already fetched..."
 fi
 
 # At this stage, we've all blobs, but no tags!
+
+echo "::endgroup::"
+echo "::group::Fetching Torvalds live"
 
 # 2nd stage Global:
 # Add torvalds live git as remote 'torvalds-live'
@@ -82,6 +97,9 @@ fi
 
 # Fetch from it (to update), also bring in the tags. Around a 60mb download, quite fast.
 [[ "${ONLINE}" == "yes" ]] && git fetch --progress --verbose --tags "${GIT_TORVALDS_LIVE_REMOTE_NAME}" # Fetch it! (including tags!)
+
+echo "::endgroup::"
+echo "::group::Adding stable remote"
 
 # Now, add the stable remote. Do NOT fetch from it, it's huge and has a lot more than we need.
 if ! git config "remote.${GIT_STABLE_LIVE_REMOTE_NAME}.url"; then
@@ -98,7 +116,10 @@ fi
 WANTED_KERNEL_VERSIONS_COUNT=${#WANTED_KERNEL_VERSIONS[@]}
 display_alert "Wanted kernel versions: ${WANTED_KERNEL_VERSIONS_COUNT}"
 
+echo "::endgroup::"
+
 for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
+	echo "::group::Fetching stable remote for ${KERNEL_VERSION}"
 	display_alert "Fetching stable kernel version: ${KERNEL_VERSION}"
 
 	KERNEL_VERSION_LOCAL_BRANCH_NAME="linux-${KERNEL_VERSION}.y"
@@ -106,16 +127,19 @@ for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 
 	# Fetch the branch from the stable live into the local branch. Since I don't specify "--tags", it will only fetch the tags for the branch. Those DON'T include the -rc tags which came from torvalds live
 	[[ "${ONLINE}" == "yes" ]] && git fetch --progress --verbose "${GIT_STABLE_LIVE_REMOTE_NAME}" "${KERNEL_VERSION_REMOTE_BRANCH_NAME}:${KERNEL_VERSION_LOCAL_BRANCH_NAME}"
+	echo "::endgroup::"
+
 done
 
 # 4th stage: For each version, eg 5.17
 # - Find the earliest tag with 5.17 in it, or 5.17-rc1 if all else fails;
 #    - find the _date_ for such a tag
 # - Export a shallow bundle via the date for that version;
-#   - include the shallow marker file (eg: .git/shallow)
-#   - lightweight tarball of those things, many -0 zstd
-#   - publish the tarball as GH releases, always in "latest" release
+#   - include the shallow marker file (.git/shallow)
+#   - ready to publish as GH releases, always in "latest" release
 for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
+	echo "::group::Processing shallow for ${KERNEL_VERSION}"
+
 	cd "${KERNEL_GIT_TREE}" || exit 2
 
 	KERNEL_VERSION_LOCAL_BRANCH_NAME="linux-${KERNEL_VERSION}.y"
@@ -165,6 +189,8 @@ for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 
 	# sanity check
 	git bundle list-heads "${OUTPUT_BUNDLE_FILE_NAME_BUNDLE}"
+
+	echo "::endgroup::"
 done
 
 # In GHA, cache the full git work tree, if it fits in GHA cache;
