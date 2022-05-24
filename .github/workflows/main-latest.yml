@@ -32,8 +32,9 @@ jobs:
           repo_token: "${{ secrets.GITHUB_TOKEN }}"
           automatic_release_tag: "latest"
           prerelease: false
-          title: "Latest kernel shallow git trees"
+          title: "Latest Linux kernel shallow git trees"
           files: |
             /tmp/workdir/kernel/output/*.gitshallow
             /tmp/workdir/kernel/output/*.gitbundle
+            /tmp/workdir/kernel/output/*.git.tar
 

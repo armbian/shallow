@@ -6,51 +6,31 @@ function display_alert() {
 	echo "--> $*"
 }
 
-function run_host_command_logged() {
-	echo "==> $*"
-	"$@"
-}
-
 echo "::group::Prepare basics"
 
+# Versions we're interested in, array - @TODO this needs smarts. maybe parse kernel.org's Atom Release feed?
+declare -ag WANTED_KERNEL_VERSIONS=("5.18" "5.17" "5.15" "5.10" "4.19" "4.9" "4.4")
 ONLINE="yes"
 
 BASE_WORK_DIR="${BASE_WORK_DIR:-"/Volumes/LinuxDev/shallow_git_tree_work"}"
-mkdir -p "${BASE_WORK_DIR}"
-
 WORKDIR="${BASE_WORK_DIR}/kernel"
-mkdir -p "${WORKDIR}"
-
 SHALLOWED_TREES_DIR="${WORKDIR}/shallow_trees"
-mkdir -p "${SHALLOWED_TREES_DIR}"
-
 OUTPUT_DIR="${WORKDIR}/output"
-mkdir -p "${OUTPUT_DIR}"
-
 KERNEL_GIT_TREE="${WORKDIR}/worktree"
-mkdir -p "${KERNEL_GIT_TREE}"
-
 KERNEL_TORVALDS_BUNDLE_DIR="${WORKDIR}/bundle-torvalds"
-mkdir -p "${KERNEL_TORVALDS_BUNDLE_DIR}"
+mkdir -p "${BASE_WORK_DIR}" "${WORKDIR}" "${SHALLOWED_TREES_DIR}" "${OUTPUT_DIR}" "${KERNEL_GIT_TREE}" "${KERNEL_TORVALDS_BUNDLE_DIR}"
 
-GIT_TORVALDS_BUNDLE_URL="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/clone.bundle"
-GIT_TORVALDS_BUNDLE_ID="$(echo -n "${GIT_TORVALDS_BUNDLE_URL}" | md5sum | awk '{print $1}')" # md5 of the URL.
-GIT_TORVALDS_BUNDLE_FILE="${KERNEL_TORVALDS_BUNDLE_DIR}/${GIT_TORVALDS_BUNDLE_ID}.gitbundle" # final filename of bundle
-GIT_TORVALDS_BUNDLE_REMOTE_NAME="torvalds-gitbundle"                                         # name of the remote that will point to bundle
-
-GIT_TORVALDS_LIVE_GIT_URL="git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
-GIT_TORVALDS_LIVE_REMOTE_NAME="torvalds-live"
-
-GIT_STABLE_LIVE_GIT_URL="git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git"
-GIT_STABLE_LIVE_REMOTE_NAME="stable-live"
-
-# Versions we're interested in, array
-declare -ag WANTED_KERNEL_VERSIONS=("5.18" "5.17" "5.15" "5.10" "4.19" "4.9" "4.4")
+GIT_TORVALDS_BUNDLE_URL="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/clone.bundle" # Thanks, kernel.org!
+GIT_TORVALDS_BUNDLE_ID="$(echo -n "${GIT_TORVALDS_BUNDLE_URL}" | md5sum | awk '{print $1}')"              # md5 of the URL.
+GIT_TORVALDS_BUNDLE_FILE="${KERNEL_TORVALDS_BUNDLE_DIR}/${GIT_TORVALDS_BUNDLE_ID}.gitbundle"              # final filename of bundle
+GIT_TORVALDS_BUNDLE_REMOTE_NAME="torvalds-gitbundle"                                                      # name of the remote that will point to bundle
+GIT_TORVALDS_LIVE_GIT_URL="git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"              # Torvalds live tree git:// URL
+GIT_TORVALDS_LIVE_REMOTE_NAME="torvalds-live"                                                             # name of the remote that will point to live Torvalds tree
+GIT_STABLE_LIVE_GIT_URL="git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git"           # Stable live tree git:// URL
+GIT_STABLE_LIVE_REMOTE_NAME="stable-live"                                                                 # name of the remote that will point to live stable tree
 
 # 1st stage Global:
 # Init an empty git repo
-# Fetch from Torvalds bundle (very slow) into 'torvalds-gitbundle' branch
-# include tags?
 if [[ ! -d "${KERNEL_GIT_TREE}/.git" ]]; then
 	display_alert "Initting git tree"
 	git init --initial-branch="armbian_unused_initial_branch" "${KERNEL_GIT_TREE}"
@@ -68,11 +48,12 @@ if ! git config "remote.${GIT_TORVALDS_BUNDLE_REMOTE_NAME}.url"; then
 	# Grab torvald's gitbundle via http from kernel.org
 	if [[ ! -f "${GIT_TORVALDS_BUNDLE_FILE}" ]]; then # Download the bundle file if it does not exist.
 		display_alert "Downloading Git cold bundle via HTTP" "${GIT_TORVALDS_BUNDLE_URL}"
-		run_host_command_logged wget --continue --progress=dot:giga --output-document="${GIT_TORVALDS_BUNDLE_FILE}" "${GIT_TORVALDS_BUNDLE_URL}"
+		wget --continue --progress=dot:giga --output-document="${GIT_TORVALDS_BUNDLE_FILE}" "${GIT_TORVALDS_BUNDLE_URL}"
 	else
 		display_alert "Cold bundle file exists, using it" "${GIT_TORVALDS_BUNDLE_FILE}" "git"
 	fi
 
+	# Fetch from Torvalds bundle (very slow) into 'torvalds-gitbundle' branch
 	display_alert "Fetching from cold git bundle, wait" "${GIT_TORVALDS_BUNDLE_ID}"
 	git bundle verify "${GIT_TORVALDS_BUNDLE_FILE}"                                   # Make sure bundle is valid.
 	git remote add "${GIT_TORVALDS_BUNDLE_REMOTE_NAME}" "${GIT_TORVALDS_BUNDLE_FILE}" # Add the remote pointing to the cold bundle file
@@ -111,7 +92,7 @@ fi
 
 # 3rd stage: For each version, eg: 5.17
 # - Fetch from stable git source (not bundle) into `stable-5.17` branch
-#   - include tags?
+#   - include tags
 #   - if this fails (eg: an unreleased kernel at that moment, tolerate and go ahead, torvalds should have -rc1)
 WANTED_KERNEL_VERSIONS_COUNT=${#WANTED_KERNEL_VERSIONS[@]}
 display_alert "Wanted kernel versions: ${WANTED_KERNEL_VERSIONS_COUNT}"
@@ -132,7 +113,7 @@ for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 done
 
 # 4th stage: For each version, eg 5.17
-# - Find the earliest tag with 5.17 in it, or 5.17-rc1 if all else fails;
+# - Find the earliest tag with 5.17 in it
 #    - find the _date_ for such a tag
 # - Export a shallow bundle via the date for that version;
 #   - include the shallow marker file (.git/shallow)
@@ -156,7 +137,6 @@ for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 
 	# Clone from the worktree into a new directory, shallowing in the process. This is the only way to make it consistently shallow without jumping through hoops.
 	KERNEL_VERSION_SHALLOWED_WORKDIR="${SHALLOWED_TREES_DIR}/shallow-${KERNEL_VERSION}-${KERNEL_VERSION_FIRST_RC_TAG_NAME}"
-	#rm -rf "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
 
 	if [[ ! -d "${KERNEL_VERSION_SHALLOWED_WORKDIR}" ]]; then
 		display_alert "Making shallow tree" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
@@ -168,11 +148,9 @@ for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 		display_alert "Shallow tree already exists" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
 	fi
 
-	OUTPUT_BUNDLE_DIR="${OUTPUT_DIR}" # /${KERNEL_VERSION}"
-	mkdir -p "${OUTPUT_BUNDLE_DIR}"
-
-	OUTPUT_BUNDLE_FILE_NAME_BUNDLE="${OUTPUT_BUNDLE_DIR}/linux-${KERNEL_VERSION}.gitbundle"
-	OUTPUT_BUNDLE_FILE_NAME_SHALLOW="${OUTPUT_BUNDLE_DIR}/linux-${KERNEL_VERSION}.gitshallow"
+	OUTPUT_BUNDLE_FILE_NAME_BUNDLE="${OUTPUT_DIR}/linux-${KERNEL_VERSION}.gitbundle"
+	OUTPUT_BUNDLE_FILE_NAME_SHALLOW="${OUTPUT_DIR}/linux-${KERNEL_VERSION}.gitshallow"
+	OUTPUT_BUNDLE_FILE_NAME_TARBALL="${OUTPUT_DIR}/linux-${KERNEL_VERSION}.git.tar"
 
 	cd "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
 
@@ -181,7 +159,7 @@ for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 		git remote rm origin
 	fi
 
-	# Now, export a bundle from the shallow tree. This is gonna be a shallow bundle, of course!
+	# Now, export a bundle from the shallow tree.
 	git bundle create "${OUTPUT_BUNDLE_FILE_NAME_BUNDLE}" --all
 
 	# export the shallow file, so it can be actually used.
@@ -189,6 +167,12 @@ for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 
 	# sanity check
 	git bundle list-heads "${OUTPUT_BUNDLE_FILE_NAME_BUNDLE}"
+
+	# Also export a .tar of .git as well, for convenience; ppl might wanna use them directly to save a fetch.
+	tar cf "${OUTPUT_BUNDLE_FILE_NAME_TARBALL}" .git
+
+	# List the outputs with sizes
+	ls -laht "${OUTPUT_DIR}/linux-${KERNEL_VERSION}".*
 
 	echo "::endgroup::"
 done
