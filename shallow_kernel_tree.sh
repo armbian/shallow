@@ -5,13 +5,23 @@ set -e
 function display_alert() {
 	echo "--> $*"
 }
+echo "::group::Read kernel.org versions"
+# Read the current versions of kernel from kernel.org JSON releases. Again, thanks, kernel.org.
+curl --silent "https://www.kernel.org/releases.json" > /tmp/kernel-releases.json
+echo "Kernel releases versions from JSON:"
+cat /tmp/kernel-releases.json | jq -r ".releases[].version"
+
+declare -ag WANTED_KERNEL_VERSIONS
+mapfile -t WANTED_KERNEL_VERSIONS < <(cat /tmp/kernel-releases.json | jq -r ".releases[].version" | grep -v -e "^next\-" | sed -e 's|-rc|.-rc|' | cut -d "." -f 1,2)
+
+#declare -ag WANTED_KERNEL_VERSIONS=("5.19" "5.18" "5.17" "5.15" "5.10" "4.19" "4.9" "4.4")
+
+# Show the array
+display_alert "Wanted kernel versions:" "${WANTED_KERNEL_VERSIONS[@]}"
+echo "::endgroup::"
 
 echo "::group::Prepare basics"
-
-# Versions we're interested in, array - @TODO this needs smarts. maybe parse kernel.org's Atom Release feed?
-declare -ag WANTED_KERNEL_VERSIONS=("5.18" "5.17" "5.15" "5.10" "4.19" "4.9" "4.4")
 ONLINE="yes"
-
 BASE_WORK_DIR="${BASE_WORK_DIR:-"/Volumes/LinuxDev/shallow_git_tree_work"}"
 WORKDIR="${BASE_WORK_DIR}/kernel"
 SHALLOWED_TREES_DIR="${WORKDIR}/shallow_trees"
@@ -77,7 +87,13 @@ else
 fi
 
 # Fetch from it (to update), also bring in the tags. Around a 60mb download, quite fast.
-[[ "${ONLINE}" == "yes" ]] && git fetch --progress --verbose --tags "${GIT_TORVALDS_LIVE_REMOTE_NAME}" # Fetch it! (including tags!)
+if [[ "${ONLINE}" == "yes" ]]; then
+	display_alert "Fetching from torvalds live" "${GIT_TORVALDS_LIVE_REMOTE_NAME}"
+	git fetch --progress --verbose --tags "${GIT_TORVALDS_LIVE_REMOTE_NAME}" # Fetch it! (including tags!)
+	# create a local branch from the fetched
+	display_alert "Creating local branch 'torvalds-master' from torvalds live" "${GIT_TORVALDS_LIVE_REMOTE_NAME}"
+	git branch --force "torvalds-master" FETCH_HEAD
+fi
 
 echo "::endgroup::"
 echo "::group::Adding stable remote"
@@ -107,7 +123,14 @@ for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 	KERNEL_VERSION_REMOTE_BRANCH_NAME="linux-${KERNEL_VERSION}.y"
 
 	# Fetch the branch from the stable live into the local branch. Since I don't specify "--tags", it will only fetch the tags for the branch. Those DON'T include the -rc tags which came from torvalds live
-	[[ "${ONLINE}" == "yes" ]] && git fetch --progress --verbose "${GIT_STABLE_LIVE_REMOTE_NAME}" "${KERNEL_VERSION_REMOTE_BRANCH_NAME}:${KERNEL_VERSION_LOCAL_BRANCH_NAME}"
+	if [[ "${ONLINE}" == "yes" ]]; then
+		declare -i STABLE_EXISTS=0
+		git fetch --progress --verbose "${GIT_STABLE_LIVE_REMOTE_NAME}" "${KERNEL_VERSION_REMOTE_BRANCH_NAME}:${KERNEL_VERSION_LOCAL_BRANCH_NAME}" && STABLE_EXISTS=1
+		if [[ ${STABLE_EXISTS} -eq 0 ]]; then
+			display_alert "Stable branch does not exist, copying torvalds-master to" "${KERNEL_VERSION_REMOTE_BRANCH_NAME}"
+			git branch --force "${KERNEL_VERSION_LOCAL_BRANCH_NAME}" "torvalds-master"
+		fi
+	fi
 	echo "::endgroup::"
 
 done
