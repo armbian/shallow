@@ -23,7 +23,7 @@ echo "::endgroup::"
 echo "::group::Prepare basics"
 ONLINE="yes"
 EXPORT_SHALLOW_PER_VERSION="yes"
-EXPORT_COMPLETE="yes"
+EXPORT_COMPLETE="no" # The complete .tar is bigger than 2gb, and that does not fit into GH Releases 2gb limit for any single file.
 BASE_WORK_DIR="${BASE_WORK_DIR:-"/Volumes/LinuxDev/shallow_git_tree_work"}"
 WORKDIR="${BASE_WORK_DIR}/kernel"
 SHALLOWED_TREES_DIR="${WORKDIR}/shallow_trees"
@@ -217,26 +217,26 @@ if [[ "${EXPORT_COMPLETE}" == "yes" ]]; then
 		echo "First clone with single-branch..."
 		git init --initial-branch="armbian_unused_first_branch" "${KERNEL_VERSION_COMPLETE_WORKDIR}"
 	fi
-	
+
 	declare -a WANTED_BRANCHES=()
 	for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 		KERNEL_VERSION_LOCAL_BRANCH_NAME="linux-${KERNEL_VERSION}.y"
 		WANTED_BRANCHES+=("${KERNEL_VERSION_LOCAL_BRANCH_NAME}:${KERNEL_VERSION_LOCAL_BRANCH_NAME}")
 	done
-	
+
 	# Do a single fetch against all the branches...
 	cd "${KERNEL_VERSION_COMPLETE_WORKDIR}" || exit 3
 	echo "adding branches ${WANTED_BRANCHES[*]}..."
 	git fetch --progress --verbose "file://${KERNEL_GIT_TREE}" "${WANTED_BRANCHES[@]}"
-	
+
 	# list all tags in the complete tree
 	echo "all tags:"
 	git -C "${KERNEL_VERSION_COMPLETE_WORKDIR}" tag -l | cat || true
-	
+
 	# list all branches in the complete tree
 	echo "all branches:"
 	git -C "${KERNEL_VERSION_COMPLETE_WORKDIR}" branch -a | cat || true
-	
+
 	# show du human total size of the complete tree
 	echo -n "total size:"
 	du -hsc "${KERNEL_VERSION_COMPLETE_WORKDIR}"
@@ -244,7 +244,7 @@ if [[ "${EXPORT_COMPLETE}" == "yes" ]]; then
 	# export the complete tree
 	OUTPUT_BUNDLE_FILE_NAME_COMPLETE="${OUTPUT_DIR}/linux-complete.git.tar"
 	tar cf "${OUTPUT_BUNDLE_FILE_NAME_COMPLETE}" .git
-	
+
 	echo "::endgroup::"
 fi
 
