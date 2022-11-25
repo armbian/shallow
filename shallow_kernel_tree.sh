@@ -22,13 +22,16 @@ echo "::endgroup::"
 
 echo "::group::Prepare basics"
 ONLINE="yes"
+EXPORT_SHALLOW_PER_VERSION="yes"
+EXPORT_COMPLETE="yes"
 BASE_WORK_DIR="${BASE_WORK_DIR:-"/Volumes/LinuxDev/shallow_git_tree_work"}"
 WORKDIR="${BASE_WORK_DIR}/kernel"
 SHALLOWED_TREES_DIR="${WORKDIR}/shallow_trees"
+COMPLETE_TREES_DIR="${WORKDIR}/complete_trees"
 OUTPUT_DIR="${WORKDIR}/output"
 KERNEL_GIT_TREE="${WORKDIR}/worktree"
 KERNEL_TORVALDS_BUNDLE_DIR="${WORKDIR}/bundle-torvalds"
-mkdir -p "${BASE_WORK_DIR}" "${WORKDIR}" "${SHALLOWED_TREES_DIR}" "${OUTPUT_DIR}" "${KERNEL_GIT_TREE}" "${KERNEL_TORVALDS_BUNDLE_DIR}"
+mkdir -p "${BASE_WORK_DIR}" "${WORKDIR}" "${SHALLOWED_TREES_DIR}" "${COMPLETE_TREES_DIR}" "${OUTPUT_DIR}" "${KERNEL_GIT_TREE}" "${KERNEL_TORVALDS_BUNDLE_DIR}"
 
 GIT_TORVALDS_BUNDLE_URL="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/clone.bundle" # Thanks, kernel.org!
 GIT_TORVALDS_BUNDLE_ID="$(echo -n "${GIT_TORVALDS_BUNDLE_URL}" | md5sum | awk '{print $1}')"              # md5 of the URL.
@@ -141,64 +144,109 @@ done
 # - Export a shallow bundle via the date for that version;
 #   - include the shallow marker file (.git/shallow)
 #   - ready to publish as GH releases, always in "latest" release
-for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
-	echo "::group::Processing shallow for ${KERNEL_VERSION}"
+if [[ "${EXPORT_SHALLOW_PER_VERSION}" == "yes" ]]; then
+	for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
+		echo "::group::Exporting shallow for ${KERNEL_VERSION}"
 
-	cd "${KERNEL_GIT_TREE}" || exit 2
+		cd "${KERNEL_GIT_TREE}" || exit 2
 
-	KERNEL_VERSION_LOCAL_BRANCH_NAME="linux-${KERNEL_VERSION}.y"
-	display_alert "Finding shallow point for version: ${KERNEL_VERSION}" "on local branch" "${KERNEL_VERSION_LOCAL_BRANCH_NAME}"
+		KERNEL_VERSION_LOCAL_BRANCH_NAME="linux-${KERNEL_VERSION}.y"
+		display_alert "Finding shallow point for version: ${KERNEL_VERSION}" "on local branch" "${KERNEL_VERSION_LOCAL_BRANCH_NAME}"
 
-	# shit happens upstream too, so filter out "-dontuse" tags.
-	KERNEL_VERSION_FIRST_RC_TAG_NAME="$(git tag -l | grep "^v$(echo -n "${KERNEL_VERSION}" | sed -e 's/\./\\\./')-rc" | grep -v "\-dontuse" | sort -n | head -1)"
-	display_alert "Found first RC for version:" "${KERNEL_VERSION}" "${KERNEL_VERSION_FIRST_RC_TAG_NAME}"
+		# shit happens upstream too, so filter out "-dontuse" tags.
+		KERNEL_VERSION_FIRST_RC_TAG_NAME="$(git tag -l | grep "^v$(echo -n "${KERNEL_VERSION}" | sed -e 's/\./\\\./')-rc" | grep -v "\-dontuse" | sort -n | head -1)"
+		display_alert "Found first RC for version:" "${KERNEL_VERSION}" "${KERNEL_VERSION_FIRST_RC_TAG_NAME}"
 
-	# Now translate that tag into a date, which what we're gonna use to shallow the bundle.
-	# Attention: date has timezone part.
-	KERNEL_VERSION_SHALLOW_AT_DATE="$(git tag --list --format="%(creatordate)" "${KERNEL_VERSION_FIRST_RC_TAG_NAME}")"
-	display_alert "Date for first RC tag:" "${KERNEL_VERSION}" "${KERNEL_VERSION_FIRST_RC_TAG_NAME}" "'${KERNEL_VERSION_SHALLOW_AT_DATE}'"
+		# Now translate that tag into a date, which what we're gonna use to shallow the bundle.
+		# Attention: date has timezone part.
+		KERNEL_VERSION_SHALLOW_AT_DATE="$(git tag --list --format="%(creatordate)" "${KERNEL_VERSION_FIRST_RC_TAG_NAME}")"
+		display_alert "Date for first RC tag:" "${KERNEL_VERSION}" "${KERNEL_VERSION_FIRST_RC_TAG_NAME}" "'${KERNEL_VERSION_SHALLOW_AT_DATE}'"
 
-	# Clone from the worktree into a new directory, shallowing in the process. This is the only way to make it consistently shallow without jumping through hoops.
-	KERNEL_VERSION_SHALLOWED_WORKDIR="${SHALLOWED_TREES_DIR}/shallow-${KERNEL_VERSION}-${KERNEL_VERSION_FIRST_RC_TAG_NAME}"
+		# Clone from the worktree into a new directory, shallowing in the process. This is the only way to make it consistently shallow without jumping through hoops.
+		KERNEL_VERSION_SHALLOWED_WORKDIR="${SHALLOWED_TREES_DIR}/shallow-${KERNEL_VERSION}-${KERNEL_VERSION_FIRST_RC_TAG_NAME}"
 
-	if [[ ! -d "${KERNEL_VERSION_SHALLOWED_WORKDIR}" ]]; then
-		display_alert "Making shallow tree" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
-		git clone --no-checkout --progress --verbose \
-			--single-branch --branch="${KERNEL_VERSION_LOCAL_BRANCH_NAME}" \
-			--tags --shallow-since="${KERNEL_VERSION_SHALLOW_AT_DATE}" \
-			"file://${KERNEL_GIT_TREE}" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
-	else
-		display_alert "Shallow tree already exists" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
+		if [[ ! -d "${KERNEL_VERSION_SHALLOWED_WORKDIR}" ]]; then
+			display_alert "Making shallow tree" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
+			git clone --no-checkout --progress --verbose \
+				--single-branch --branch="${KERNEL_VERSION_LOCAL_BRANCH_NAME}" \
+				--tags --shallow-since="${KERNEL_VERSION_SHALLOW_AT_DATE}" \
+				"file://${KERNEL_GIT_TREE}" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
+		else
+			display_alert "Shallow tree already exists" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
+		fi
+
+		OUTPUT_BUNDLE_FILE_NAME_BUNDLE="${OUTPUT_DIR}/linux-${KERNEL_VERSION}.gitbundle"
+		OUTPUT_BUNDLE_FILE_NAME_SHALLOW="${OUTPUT_DIR}/linux-${KERNEL_VERSION}.gitshallow"
+		OUTPUT_BUNDLE_FILE_NAME_TARBALL="${OUTPUT_DIR}/linux-${KERNEL_VERSION}.git.tar"
+
+		cd "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
+
+		# Remove the origin remote, otherwise it would be exported due to "--all" below.
+		if git config "remote.origin.url"; then
+			git remote rm origin
+		fi
+
+		# Now, export a bundle from the shallow tree.
+		git bundle create "${OUTPUT_BUNDLE_FILE_NAME_BUNDLE}" --all
+
+		# export the shallow file, so it can be actually used.
+		cp -pv ".git/shallow" "${OUTPUT_BUNDLE_FILE_NAME_SHALLOW}"
+
+		# sanity check
+		git bundle list-heads "${OUTPUT_BUNDLE_FILE_NAME_BUNDLE}"
+
+		# Also export a .tar of .git as well, for convenience; ppl might wanna use them directly to save a fetch.
+		tar cf "${OUTPUT_BUNDLE_FILE_NAME_TARBALL}" .git
+
+		# List the outputs with sizes
+		ls -laht "${OUTPUT_DIR}/linux-${KERNEL_VERSION}".*
+
+		echo "::endgroup::"
+	done
+fi
+
+# 5th stage: export complete tree for the active versions, not shallow.
+# Will be used for the separate-git+worktree version.
+if [[ "${EXPORT_COMPLETE}" == "yes" ]]; then
+	echo "::group::Exporting complete tree for multiple worktree seeding"
+
+	KERNEL_VERSION_COMPLETE_WORKDIR="${COMPLETE_TREES_DIR}/complete1"
+	display_alert "Making complete tree" "${KERNEL_VERSION_COMPLETE_WORKDIR}"
+
+	if [[ ! -d "${KERNEL_VERSION_COMPLETE_WORKDIR}" ]]; then
+		echo "First clone with single-branch..."
+		git init --initial-branch="armbian_unused_first_branch" "${KERNEL_VERSION_COMPLETE_WORKDIR}"
 	fi
+	
+	declare -a WANTED_BRANCHES=()
+	for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
+		KERNEL_VERSION_LOCAL_BRANCH_NAME="linux-${KERNEL_VERSION}.y"
+		WANTED_BRANCHES+=("${KERNEL_VERSION_LOCAL_BRANCH_NAME}:${KERNEL_VERSION_LOCAL_BRANCH_NAME}")
+	done
+	
+	# Do a single fetch against all the branches...
+	cd "${KERNEL_VERSION_COMPLETE_WORKDIR}" || exit 3
+	echo "adding branches ${WANTED_BRANCHES[*]}..."
+	git fetch --progress --verbose "file://${KERNEL_GIT_TREE}" "${WANTED_BRANCHES[@]}"
+	
+	# list all tags in the complete tree
+	echo "all tags:"
+	git -C "${KERNEL_VERSION_COMPLETE_WORKDIR}" tag -l | cat || true
+	
+	# list all branches in the complete tree
+	echo "all branches:"
+	git -C "${KERNEL_VERSION_COMPLETE_WORKDIR}" branch -a | cat || true
+	
+	# show du human total size of the complete tree
+	echo -n "total size:"
+	du -hsc "${KERNEL_VERSION_COMPLETE_WORKDIR}"
 
-	OUTPUT_BUNDLE_FILE_NAME_BUNDLE="${OUTPUT_DIR}/linux-${KERNEL_VERSION}.gitbundle"
-	OUTPUT_BUNDLE_FILE_NAME_SHALLOW="${OUTPUT_DIR}/linux-${KERNEL_VERSION}.gitshallow"
-	OUTPUT_BUNDLE_FILE_NAME_TARBALL="${OUTPUT_DIR}/linux-${KERNEL_VERSION}.git.tar"
-
-	cd "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
-
-	# Remove the origin remote, otherwise it would be exported due to "--all" below.
-	if git config "remote.origin.url"; then
-		git remote rm origin
-	fi
-
-	# Now, export a bundle from the shallow tree.
-	git bundle create "${OUTPUT_BUNDLE_FILE_NAME_BUNDLE}" --all
-
-	# export the shallow file, so it can be actually used.
-	cp -pv ".git/shallow" "${OUTPUT_BUNDLE_FILE_NAME_SHALLOW}"
-
-	# sanity check
-	git bundle list-heads "${OUTPUT_BUNDLE_FILE_NAME_BUNDLE}"
-
-	# Also export a .tar of .git as well, for convenience; ppl might wanna use them directly to save a fetch.
-	tar cf "${OUTPUT_BUNDLE_FILE_NAME_TARBALL}" .git
-
-	# List the outputs with sizes
-	ls -laht "${OUTPUT_DIR}/linux-${KERNEL_VERSION}".*
-
+	# export the complete tree
+	OUTPUT_BUNDLE_FILE_NAME_COMPLETE="${OUTPUT_DIR}/linux-complete.git.tar"
+	tar cf "${OUTPUT_BUNDLE_FILE_NAME_COMPLETE}" .git
+	
 	echo "::endgroup::"
-done
+fi
 
 # In GHA, cache the full git work tree, if it fits in GHA cache;
 # If cache hit, skip 1st stage, but _always_ execute stages 2-4 (to update the cache)
