@@ -11,8 +11,24 @@ jobs:
   git-trees:
     runs-on: ubuntu-latest
     steps:
+      - name: Docker Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }} # GitHub username or org
+          password: ${{ secrets.GITHUB_TOKEN }}    # GitHub actions builtin token. repo has to have pkg access.
+        
       - name: Checkout
         uses: actions/checkout@v2
+        
+      - name: Test ORAS, Tokens, Logins, etc
+        env: 
+          TARGET_OCI: "ghcr.io/${{ github.repository }}/kernel-git-oras-validation:latest"
+          TARGET_FULL_FILE_PATH: "/tmp/test_oras/test.txt"
+        run: |
+          mkdir -p "/tmp/test_oras"
+          date > "${TARGET_FULL_FILE_PATH}"
+          bash oras_upload.sh
 
       - name: Cache git worktree
         uses: actions/cache@v2
@@ -22,19 +38,27 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-kernel-worktree
 
-      - name: Prepare git trees, bulk of work
+      - name: Prepare git trees, bulk of work, slow
         run: |
           BASE_WORK_DIR="/tmp/workdir" bash shallow_kernel_tree.sh
 
-      - name: "GH latest release"
-        uses: "marvinpinto/action-automatic-releases@latest"
-        with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          automatic_release_tag: "latest"
-          prerelease: false
-          title: "Latest Linux kernel shallow git trees"
-          files: |
-            /tmp/workdir/kernel/output/*.gitshallow
-            /tmp/workdir/kernel/output/*.gitbundle
-            /tmp/workdir/kernel/output/*.git.tar
+      - name: Upload complete tree to ghcr.io via ORAS
+        env:
+          TARGET_OCI: "ghcr.io/${{ github.repository }}/kernel-git:latest"
+          TARGET_FULL_FILE_PATH: "/tmp/workdir/kernel/output_oras/linux-complete.git.tar"
+        run: |
+          bash oras_upload.sh
+
+
+      #- name: "GH latest release"
+      #  uses: "marvinpinto/action-automatic-releases@latest"
+      #  with:
+      #    repo_token: "${{ secrets.GITHUB_TOKEN }}"
+      #    automatic_release_tag: "latest"
+      #    prerelease: false
+      #    title: "Latest Linux kernel shallow git trees"
+      #    files: |
+      #      /tmp/workdir/kernel/output/*.gitshallow
+      #      /tmp/workdir/kernel/output/*.gitbundle
+      #      /tmp/workdir/kernel/output/*.git.tar
 

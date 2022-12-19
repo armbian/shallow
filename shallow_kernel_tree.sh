@@ -22,16 +22,17 @@ echo "::endgroup::"
 
 echo "::group::Prepare basics"
 ONLINE="yes"
-EXPORT_SHALLOW_PER_VERSION="yes"
-EXPORT_COMPLETE="no" # The complete .tar is bigger than 2gb, and that does not fit into GH Releases 2gb limit for any single file.
+EXPORT_SHALLOW_PER_VERSION="no"
+EXPORT_COMPLETE="yes" # The complete .tar is bigger than 2gb, and that does not fit into GH Releases 2gb limit for any single file.
 BASE_WORK_DIR="${BASE_WORK_DIR:-"/Volumes/LinuxDev/shallow_git_tree_work"}"
 WORKDIR="${BASE_WORK_DIR}/kernel"
 SHALLOWED_TREES_DIR="${WORKDIR}/shallow_trees"
 COMPLETE_TREES_DIR="${WORKDIR}/complete_trees"
 OUTPUT_DIR="${WORKDIR}/output"
+OUTPUT_DIR_ORAS="${WORKDIR}/output_oras"
 KERNEL_GIT_TREE="${WORKDIR}/worktree"
 KERNEL_TORVALDS_BUNDLE_DIR="${WORKDIR}/bundle-torvalds"
-mkdir -p "${BASE_WORK_DIR}" "${WORKDIR}" "${SHALLOWED_TREES_DIR}" "${COMPLETE_TREES_DIR}" "${OUTPUT_DIR}" "${KERNEL_GIT_TREE}" "${KERNEL_TORVALDS_BUNDLE_DIR}"
+mkdir -p "${BASE_WORK_DIR}" "${WORKDIR}" "${SHALLOWED_TREES_DIR}" "${COMPLETE_TREES_DIR}" "${OUTPUT_DIR}" "${KERNEL_GIT_TREE}" "${KERNEL_TORVALDS_BUNDLE_DIR}" "${OUTPUT_DIR_ORAS}"
 
 GIT_TORVALDS_BUNDLE_URL="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/clone.bundle" # Thanks, kernel.org!
 GIT_TORVALDS_BUNDLE_ID="$(echo -n "${GIT_TORVALDS_BUNDLE_URL}" | md5sum | awk '{print $1}')"              # md5 of the URL.
@@ -214,7 +215,7 @@ if [[ "${EXPORT_COMPLETE}" == "yes" ]]; then
 	display_alert "Making complete tree" "${KERNEL_VERSION_COMPLETE_WORKDIR}"
 
 	if [[ ! -d "${KERNEL_VERSION_COMPLETE_WORKDIR}" ]]; then
-		echo "First clone with single-branch..."
+		echo "Empty init..."
 		git init --initial-branch="armbian_unused_first_branch" "${KERNEL_VERSION_COMPLETE_WORKDIR}"
 	fi
 
@@ -237,13 +238,20 @@ if [[ "${EXPORT_COMPLETE}" == "yes" ]]; then
 	echo "all branches:"
 	git -C "${KERNEL_VERSION_COMPLETE_WORKDIR}" branch -a | cat || true
 
+	# remove hooks, if dir exists
+	if [[ -d "${KERNEL_VERSION_COMPLETE_WORKDIR}/.git/hooks" ]]; then
+		rm -rf "${KERNEL_VERSION_COMPLETE_WORKDIR}/.git/hooks"
+	fi
+
 	# show du human total size of the complete tree
 	echo -n "total size:"
 	du -hsc "${KERNEL_VERSION_COMPLETE_WORKDIR}"
 
 	# export the complete tree
-	OUTPUT_BUNDLE_FILE_NAME_COMPLETE="${OUTPUT_DIR}/linux-complete.git.tar"
+	OUTPUT_BUNDLE_FILE_NAME_COMPLETE="${OUTPUT_DIR_ORAS}/linux-complete.git.tar"
+	echo "Exporting .tar ${OUTPUT_BUNDLE_FILE_NAME_COMPLETE} "
 	tar cf "${OUTPUT_BUNDLE_FILE_NAME_COMPLETE}" .git
+	ls -lah "${OUTPUT_BUNDLE_FILE_NAME_COMPLETE}"
 
 	echo "::endgroup::"
 fi
