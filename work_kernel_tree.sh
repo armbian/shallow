@@ -224,6 +224,8 @@ if [[ "${EXPORT_COMPLETE}" == "yes" ]]; then
 		KERNEL_VERSION_LOCAL_BRANCH_NAME="linux-${KERNEL_VERSION}.y"
 		WANTED_BRANCHES+=("${KERNEL_VERSION_LOCAL_BRANCH_NAME}:${KERNEL_VERSION_LOCAL_BRANCH_NAME}")
 	done
+	# Include a 'master' reference from torvalds-master; this way the produced export has the expected 'master' branch
+	WANTED_BRANCHES+=("torvalds-master:master")
 
 	# Do a single fetch against all the branches...
 	cd "${KERNEL_VERSION_COMPLETE_WORKDIR}" || exit 3

@@ -40,7 +40,7 @@ jobs:
 
       - name: Prepare git trees, bulk of work, slow
         run: |
-          BASE_WORK_DIR="/tmp/workdir" bash shallow_kernel_tree.sh
+          BASE_WORK_DIR="/tmp/workdir" bash work_kernel_tree.sh
 
       - name: Upload complete tree to ghcr.io via ORAS
         env:
