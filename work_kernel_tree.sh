@@ -21,18 +21,18 @@ display_alert "Wanted kernel versions:" "${WANTED_KERNEL_VERSIONS[@]}"
 echo "::endgroup::"
 
 echo "::group::Prepare basics"
-ONLINE="yes"
-EXPORT_SHALLOW_PER_VERSION="no"
-EXPORT_COMPLETE="yes" # The complete .tar is bigger than 2gb, and that does not fit into GH Releases 2gb limit for any single file.
+ONLINE="${ONLINE:-"yes"}"
+EXPORT_SHALLOW_PER_VERSION="yes"
+EXPORT_COMPLETE="yes" # note: The complete .tar is bigger than 2gb, and that does not fit into GH Releases 2gb limit for any single file. Use ORAS and ghcr.io.
 BASE_WORK_DIR="${BASE_WORK_DIR:-"/Volumes/LinuxDev/shallow_git_tree_work"}"
 WORKDIR="${BASE_WORK_DIR}/kernel"
 SHALLOWED_TREES_DIR="${WORKDIR}/shallow_trees"
 COMPLETE_TREES_DIR="${WORKDIR}/complete_trees"
-OUTPUT_DIR="${WORKDIR}/output"
 OUTPUT_DIR_ORAS="${WORKDIR}/output_oras"
 KERNEL_GIT_TREE="${WORKDIR}/worktree"
 KERNEL_TORVALDS_BUNDLE_DIR="${WORKDIR}/bundle-torvalds"
-mkdir -p "${BASE_WORK_DIR}" "${WORKDIR}" "${SHALLOWED_TREES_DIR}" "${COMPLETE_TREES_DIR}" "${OUTPUT_DIR}" "${KERNEL_GIT_TREE}" "${KERNEL_TORVALDS_BUNDLE_DIR}" "${OUTPUT_DIR_ORAS}"
+ALL_VERSIONS_FILE="${OUTPUT_DIR_ORAS}/shallow_versions.txt"
+mkdir -p "${BASE_WORK_DIR}" "${WORKDIR}" "${SHALLOWED_TREES_DIR}" "${COMPLETE_TREES_DIR}" "${KERNEL_GIT_TREE}" "${KERNEL_TORVALDS_BUNDLE_DIR}" "${OUTPUT_DIR_ORAS}"
 
 GIT_TORVALDS_BUNDLE_URL="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/clone.bundle" # Thanks, kernel.org!
 GIT_TORVALDS_BUNDLE_ID="$(echo -n "${GIT_TORVALDS_BUNDLE_URL}" | md5sum | awk '{print $1}')"              # md5 of the URL.
@@ -79,8 +79,8 @@ fi
 # At this stage, we've all blobs, but no tags!
 
 echo "::endgroup::"
-echo "::group::Fetching Torvalds live"
 
+echo "::group::Fetching Torvalds live"
 # 2nd stage Global:
 # Add torvalds live git as remote 'torvalds-live'
 if ! git config "remote.${GIT_TORVALDS_LIVE_REMOTE_NAME}.url"; then
@@ -98,10 +98,9 @@ if [[ "${ONLINE}" == "yes" ]]; then
 	display_alert "Creating local branch 'torvalds-master' from torvalds live" "${GIT_TORVALDS_LIVE_REMOTE_NAME}"
 	git branch --force "torvalds-master" FETCH_HEAD
 fi
-
 echo "::endgroup::"
-echo "::group::Adding stable remote"
 
+echo "::group::Adding stable remote"
 # Now, add the stable remote. Do NOT fetch from it, it's huge and has a lot more than we need.
 if ! git config "remote.${GIT_STABLE_LIVE_REMOTE_NAME}.url"; then
 	display_alert "Adding stable live remote" "${GIT_STABLE_LIVE_REMOTE_NAME}"
@@ -109,6 +108,7 @@ if ! git config "remote.${GIT_STABLE_LIVE_REMOTE_NAME}.url"; then
 else
 	display_alert "Stable live remote already exists..."
 fi
+echo "::endgroup::"
 
 # 3rd stage: For each version, eg: 5.17
 # - Fetch from stable git source (not bundle) into `stable-5.17` branch
@@ -116,8 +116,6 @@ fi
 #   - if this fails (eg: an unreleased kernel at that moment, tolerate and go ahead, torvalds should have -rc1)
 WANTED_KERNEL_VERSIONS_COUNT=${#WANTED_KERNEL_VERSIONS[@]}
 display_alert "Wanted kernel versions: ${WANTED_KERNEL_VERSIONS_COUNT}"
-
-echo "::endgroup::"
 
 for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 	echo "::group::Fetching stable remote for ${KERNEL_VERSION}"
@@ -144,8 +142,11 @@ done
 #    - find the _date_ for such a tag
 # - Export a shallow bundle via the date for that version;
 #   - include the shallow marker file (.git/shallow)
-#   - ready to publish as GH releases, always in "latest" release
 if [[ "${EXPORT_SHALLOW_PER_VERSION}" == "yes" ]]; then
+	echo "Writing file with all versions: ${ALL_VERSIONS_FILE}"
+	echo "${WANTED_KERNEL_VERSIONS[@]}" > "${ALL_VERSIONS_FILE}"
+	
+	
 	for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 		echo "::group::Exporting shallow for ${KERNEL_VERSION}"
 
@@ -176,31 +177,38 @@ if [[ "${EXPORT_SHALLOW_PER_VERSION}" == "yes" ]]; then
 			display_alert "Shallow tree already exists" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
 		fi
 
-		OUTPUT_BUNDLE_FILE_NAME_BUNDLE="${OUTPUT_DIR}/linux-${KERNEL_VERSION}.gitbundle"
-		OUTPUT_BUNDLE_FILE_NAME_SHALLOW="${OUTPUT_DIR}/linux-${KERNEL_VERSION}.gitshallow"
-		OUTPUT_BUNDLE_FILE_NAME_TARBALL="${OUTPUT_DIR}/linux-${KERNEL_VERSION}.git.tar"
+		OUTPUT_BUNDLE_FILE_NAME_TARBALL="${OUTPUT_DIR_ORAS}/linux-shallow-${KERNEL_VERSION}.git.tar"
 
 		cd "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
+
+		# Create a 'master' branch, which is the default branch name for git. Copy the shallowed branch.
+		git branch --force master "${KERNEL_VERSION_LOCAL_BRANCH_NAME}"
 
 		# Remove the origin remote, otherwise it would be exported due to "--all" below.
 		if git config "remote.origin.url"; then
 			git remote rm origin
 		fi
 
-		# Now, export a bundle from the shallow tree.
-		git bundle create "${OUTPUT_BUNDLE_FILE_NAME_BUNDLE}" --all
+		# remove hooks, if dir exists
+		if [[ -d "${KERNEL_VERSION_SHALLOWED_WORKDIR}/.git/hooks" ]]; then
+			rm -rf "${KERNEL_VERSION_SHALLOWED_WORKDIR}/.git/hooks"
+		fi
 
-		# export the shallow file, so it can be actually used.
-		cp -pv ".git/shallow" "${OUTPUT_BUNDLE_FILE_NAME_SHALLOW}"
+		# list all tags in the shallow tree
+		echo -n "all tags ${KERNEL_VERSION}: "
+		git -C "${KERNEL_VERSION_SHALLOWED_WORKDIR}" tag -l | cat | xargs echo -n || true
+		echo ""
 
-		# sanity check
-		git bundle list-heads "${OUTPUT_BUNDLE_FILE_NAME_BUNDLE}"
+		# list all branches in the shallow tree
+		echo -n "all branches ${KERNEL_VERSION}: "
+		git -C "${KERNEL_VERSION_SHALLOWED_WORKDIR}" branch -a | cat | xargs echo -n || true
+		echo ""
 
-		# Also export a .tar of .git as well, for convenience; ppl might wanna use them directly to save a fetch.
+		# export a .tar of .git. This is gonna be uploaded into ghcr.io via ORAS.
 		tar cf "${OUTPUT_BUNDLE_FILE_NAME_TARBALL}" .git
 
 		# List the outputs with sizes
-		ls -laht "${OUTPUT_DIR}/linux-${KERNEL_VERSION}".*
+		ls -laht "${OUTPUT_DIR_ORAS}/linux-shallow-${KERNEL_VERSION}".* || true
 
 		echo "::endgroup::"
 	done
@@ -233,12 +241,14 @@ if [[ "${EXPORT_COMPLETE}" == "yes" ]]; then
 	git fetch --progress --verbose "file://${KERNEL_GIT_TREE}" "${WANTED_BRANCHES[@]}"
 
 	# list all tags in the complete tree
-	echo "all tags:"
-	git -C "${KERNEL_VERSION_COMPLETE_WORKDIR}" tag -l | cat || true
+	echo -n "all tags (complete): "
+	git -C "${KERNEL_VERSION_COMPLETE_WORKDIR}" tag -l | cat | xargs echo -n || true
+	echo ""
 
 	# list all branches in the complete tree
-	echo "all branches:"
-	git -C "${KERNEL_VERSION_COMPLETE_WORKDIR}" branch -a | cat || true
+	echo -n "all branches (complete):"
+	git -C "${KERNEL_VERSION_COMPLETE_WORKDIR}" branch -a | cat | xargs echo -n || true
+	echo ""
 
 	# remove hooks, if dir exists
 	if [[ -d "${KERNEL_VERSION_COMPLETE_WORKDIR}/.git/hooks" ]]; then

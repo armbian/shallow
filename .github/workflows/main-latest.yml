@@ -17,12 +17,12 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }} # GitHub username or org
           password: ${{ secrets.GITHUB_TOKEN }}    # GitHub actions builtin token. repo has to have pkg access.
-        
+
       - name: Checkout
         uses: actions/checkout@v2
-        
+
       - name: Test ORAS, Tokens, Logins, etc
-        env: 
+        env:
           TARGET_OCI: "ghcr.io/${{ github.repository }}/kernel-git-oras-validation:latest"
           TARGET_FULL_FILE_PATH: "/tmp/test_oras/test.txt"
         run: |
@@ -42,23 +42,27 @@ jobs:
         run: |
           BASE_WORK_DIR="/tmp/workdir" bash work_kernel_tree.sh
 
-      - name: Upload complete tree to ghcr.io via ORAS
+      - name: Upload multiple shallow trees to ghcr.io via ORAS
+        env:
+          TARGET_OCI_PREFIX: "ghcr.io/${{ github.repository }}/kernel-git-shallow" # :latest
+          OUTPUT_BASE: "/tmp/workdir/kernel/output_oras"
+        run: |
+          for KERNEL_VERSION in $(cat ${OUTPUT_BASE}/shallow_versions.txt); do 
+             echo "::group::Pushing ORAS bundle for shallow ${KERNEL_VERSION}"
+             echo "version: $KERNEL_VERSION"
+             export TARGET_OCI="${TARGET_OCI_PREFIX}-${KERNEL_VERSION}:latest"
+             export TARGET_FULL_FILE_PATH="${OUTPUT_BASE}/linux-shallow-${KERNEL_VERSION}.git.tar"
+             echo "TARGET_OCI: ${TARGET_OCI}"
+             echo "TARGET_FULL_FILE_PATH: ${TARGET_FULL_FILE_PATH}"
+             bash oras_upload.sh
+             echo "::endgroup::"
+          done
+
+
+      - name: Upload single complete tree to ghcr.io via ORAS
         env:
           TARGET_OCI: "ghcr.io/${{ github.repository }}/kernel-git:latest"
           TARGET_FULL_FILE_PATH: "/tmp/workdir/kernel/output_oras/linux-complete.git.tar"
         run: |
           bash oras_upload.sh
-
-
-      #- name: "GH latest release"
-      #  uses: "marvinpinto/action-automatic-releases@latest"
-      #  with:
-      #    repo_token: "${{ secrets.GITHUB_TOKEN }}"
-      #    automatic_release_tag: "latest"
-      #    prerelease: false
-      #    title: "Latest Linux kernel shallow git trees"
-      #    files: |
-      #      /tmp/workdir/kernel/output/*.gitshallow
-      #      /tmp/workdir/kernel/output/*.gitbundle
-      #      /tmp/workdir/kernel/output/*.git.tar
 
