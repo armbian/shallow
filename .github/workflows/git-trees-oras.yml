@@ -1,4 +1,4 @@
-name: main-latest
+name: git-trees-oras
 
 on:
   schedule:
