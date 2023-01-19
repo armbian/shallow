@@ -145,8 +145,7 @@ done
 if [[ "${EXPORT_SHALLOW_PER_VERSION}" == "yes" ]]; then
 	echo "Writing file with all versions: ${ALL_VERSIONS_FILE}"
 	echo "${WANTED_KERNEL_VERSIONS[@]}" > "${ALL_VERSIONS_FILE}"
-	
-	
+
 	for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 		echo "::group::Exporting shallow for ${KERNEL_VERSION}"
 
@@ -169,7 +168,8 @@ if [[ "${EXPORT_SHALLOW_PER_VERSION}" == "yes" ]]; then
 
 		if [[ ! -d "${KERNEL_VERSION_SHALLOWED_WORKDIR}" ]]; then
 			display_alert "Making shallow tree" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
-			git clone --no-checkout --progress --verbose \
+			# --progress --verbose -- too much output for github actions
+			git clone --no-checkout \
 				--single-branch --branch="${KERNEL_VERSION_LOCAL_BRANCH_NAME}" \
 				--tags --shallow-since="${KERNEL_VERSION_SHALLOW_AT_DATE}" \
 				"file://${KERNEL_GIT_TREE}" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
@@ -238,7 +238,8 @@ if [[ "${EXPORT_COMPLETE}" == "yes" ]]; then
 	# Do a single fetch against all the branches...
 	cd "${KERNEL_VERSION_COMPLETE_WORKDIR}" || exit 3
 	echo "adding branches ${WANTED_BRANCHES[*]}..."
-	git fetch --progress --verbose "file://${KERNEL_GIT_TREE}" "${WANTED_BRANCHES[@]}"
+	# --progress --verbose -- too much output for github actions
+	git fetch "file://${KERNEL_GIT_TREE}" "${WANTED_BRANCHES[@]}"
 
 	# list all tags in the complete tree
 	echo -n "all tags (complete): "
