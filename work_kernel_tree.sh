@@ -11,10 +11,11 @@ curl --silent "https://www.kernel.org/releases.json" > /tmp/kernel-releases.json
 echo "Kernel releases versions from JSON:"
 cat /tmp/kernel-releases.json | jq -r ".releases[].version"
 
-declare -ag WANTED_KERNEL_VERSIONS
-mapfile -t WANTED_KERNEL_VERSIONS < <(cat /tmp/kernel-releases.json | jq -r ".releases[].version" | grep -v -e "^next\-" | sed -e 's|-rc|.-rc|' | cut -d "." -f 1,2)
+declare -ag WANTED_KERNEL_VERSIONS_KERNEL_ORG
+mapfile -t WANTED_KERNEL_VERSIONS_KERNEL_ORG < <(cat /tmp/kernel-releases.json | jq -r ".releases[].version" | grep -v -e "^next\-" | sed -e 's|-rc|.-rc|' | cut -d "." -f 1,2)
 
-#declare -ag WANTED_KERNEL_VERSIONS=("5.19" "5.18" "5.17" "5.15" "5.10" "4.19" "4.9" "4.4")
+# Include some extra ones that Armbian uses in legacies etc
+declare -ag WANTED_KERNEL_VERSIONS=("${WANTED_KERNEL_VERSIONS_KERNEL_ORG[@]}" "4.9" "4.4")
 
 # Show the array
 display_alert "Wanted kernel versions:" "${WANTED_KERNEL_VERSIONS[@]}"
