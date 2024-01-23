@@ -4,7 +4,7 @@
   </a><br>
   <strong>Linux Kernel Shallow Bundles</strong><br>
 <br>
-<a href=https://github.com/armbian/shallow/actions/workflows/git-trees-oras.yml><img alt="GitHub Workflow Status" src="https://img.shields.io/github/actions/workflow/status/armbian/shallow/git-trees-oras.yml?logo=linux&label=%20Shallow%20Linux%20bundles&style=for-the-badge&branch=patch"></a>
+<a href=https://github.com/armbian/shallow/actions/workflows/git-trees-oras.yml><img alt="GitHub Workflow Status" src="https://img.shields.io/github/actions/workflow/status/armbian/shallow/git-trees-oras.yml?logo=linux&label=Shallow%20Linux%20bundles&style=for-the-badge&branch=main"></a>
  <br>
 
 <br>
