@@ -10,6 +10,17 @@ jobs:
   git-trees:
     runs-on: ubuntu-latest
     steps:
+
+      - name: Free Github Runner
+        uses: descriptinc/free-disk-space@main
+        with:
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+    
       - name: Docker Login to GitHub Container Registry
         uses: docker/login-action@v2
         with:
