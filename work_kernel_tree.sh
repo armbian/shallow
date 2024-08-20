@@ -72,7 +72,7 @@ if ! git config "remote.${GIT_TORVALDS_BUNDLE_REMOTE_NAME}.url"; then
 	display_alert "Fetching from cold git bundle, wait" "${GIT_TORVALDS_BUNDLE_ID}"
 	git bundle verify "${GIT_TORVALDS_BUNDLE_FILE}"                                   # Make sure bundle is valid.
 	git remote add "${GIT_TORVALDS_BUNDLE_REMOTE_NAME}" "${GIT_TORVALDS_BUNDLE_FILE}" # Add the remote pointing to the cold bundle file
-	git fetch --progress --verbose "${GIT_TORVALDS_BUNDLE_REMOTE_NAME}"               # Fetch it!
+	git fetch --progress --verbose "${GIT_TORVALDS_BUNDLE_REMOTE_NAME}" master        # Fetch it!
 else
 	display_alert "Torvalds bundle already fetched..."
 fi
