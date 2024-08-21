@@ -73,7 +73,7 @@ if ! git config "remote.${GIT_TORVALDS_BUNDLE_REMOTE_NAME}.url"; then
 	display_alert "Fetching from cold git bundle, wait" "${GIT_TORVALDS_BUNDLE_ID}"
 	git bundle verify "${GIT_TORVALDS_BUNDLE_FILE}"                                   # Make sure bundle is valid.
 	git remote add "${GIT_TORVALDS_BUNDLE_REMOTE_NAME}" "${GIT_TORVALDS_BUNDLE_FILE}" # Add the remote pointing to the cold bundle file
-	git fetch --progress --verbose "${GIT_TORVALDS_BUNDLE_REMOTE_NAME}" master        # Fetch it!
+	git fetch --progress --verbose "${GIT_TORVALDS_BUNDLE_REMOTE_NAME}"               # Fetch it!
 else
 	display_alert "Torvalds bundle already fetched..."
 fi
@@ -95,7 +95,7 @@ fi
 # Fetch from it (to update), also bring in the tags. Around a 60mb download, quite fast.
 if [[ "${ONLINE}" == "yes" ]]; then
 	display_alert "Fetching from torvalds live" "${GIT_TORVALDS_LIVE_REMOTE_NAME}"
-	git fetch --progress --verbose --tags "${GIT_TORVALDS_LIVE_REMOTE_NAME}" # Fetch it! (including tags!)
+	git fetch --progress --verbose --tags "${GIT_TORVALDS_LIVE_REMOTE_NAME}" master # Fetch it! (including tags!)
 	# create a local branch from the fetched
 	display_alert "Creating local branch 'torvalds-master' from torvalds live" "${GIT_TORVALDS_LIVE_REMOTE_NAME}"
 	git branch --force "torvalds-master" FETCH_HEAD
