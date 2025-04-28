@@ -35,9 +35,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - uses: gautamkrishnar/keepalive-workflow@v2
-        with:
-          use_api: true
+      - name: Keep alive
+        uses: liskin/gh-workflow-keepalive@v1
 
       - name: Test ORAS, Tokens, Logins, etc
         env:
