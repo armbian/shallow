@@ -17,4 +17,4 @@ This repository:
 - Ensures all relevant version tags are included (including `-rc` tags).
 - Executes scheduled daily updates using GitHub Actions and caching mechanisms.
 
-> As of the `5.18.y` series, optimized shallow bundles are ~250 MB — significantly smaller than full clones and much faster to work with.
+> Optimized shallow bundles are ~300 MB — significantly smaller than full clones and much faster to work with.
