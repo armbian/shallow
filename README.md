@@ -1,24 +1,20 @@
-<p align="center">
-  <a href="#build-framework">
-  <img src="https://raw.githubusercontent.com/armbian/build/master/.github/armbian-logo.png" alt="Armbian logo" width="144">
-  </a><br>
-  <strong>Linux Kernel Shallow Bundles</strong><br>
-<br>
-<a href=https://github.com/armbian/shallow/actions/workflows/git-trees-oras.yml><img alt="GitHub Workflow Status" src="https://img.shields.io/github/actions/workflow/status/armbian/shallow/git-trees-oras.yml?logo=linux&label=Shallow%20Linux%20bundles&style=for-the-badge&branch=main"></a>
- <br>
+<h2 align="center">
+  <img src="https://raw.githubusercontent.com/armbian/.github/master/profile/logosmall.png" alt="Armbian logo">
+  <br><br>
+</h2>
 
-<br>
-<a href=https://fosstodon.org/@armbian><img alt="Mastodon Follow" src="https://img.shields.io/mastodon/follow/109365956768424870?domain=https%3A%2F%2Ffosstodon.org&logo=mastodon&style=flat-square"></a>
-<a href=http://discord.armbian.com/><img alt="Discord" src="https://img.shields.io/discord/854735915313659944?label=Discord&logo=discord&style=flat-square"></a>
-<a href=https://liberapay.com/armbian><img alt="Liberapay patrons" src="https://img.shields.io/liberapay/patrons/armbian?logo=liberapay&style=flat-square"></a>
-</p>
+This repository automates the preparation and distribution of **shallow Linux kernel bundles** optimized for use in CI/CD environments.
 
-## Why we need this?
+Full kernel trees can be several gigabytes in size and take considerable time and resources to clone. While shallow clones reduce this overhead, fetching them directly still places significant load on the source servers.
 
-- Full, non-shallow clones of Linux kernel trees are multiple gigabytes in size, and take a lot of time to process.
-- Shallow clones are much smaller, but cloning/fetching shallow trees impose a huge load on the git server
-- `kernel.org` has [git bundles](https://git-scm.com/docs/git-bundle) available for download over HTTPS/CDN (simple file download) and [recommend their use](https://www.kernel.org/best-way-to-do-linux-clones-for-your-ci.html) - [instructions](https://www.kernel.org/cloning-linux-from-a-bundle.html) 
-- This repository does the heavy lifting. Grabbing bundles, updating them from live git servers, makes them shallow and ready for consumption.
-  - Produced shallow bundles are around 250 Mb as of 5.18.y
-  - Produced shallow bundles include all tags for the version involved, including `-rc` tags
-  - Scheduled runs update bundles daily, using GitHub actions, including caching.
+To address this, `kernel.org` provides [pre-generated git bundles](https://git-scm.com/docs/git-bundle), which are simple archive files downloadable via CDN. These are the recommended method for CI usage according to [kernel.org best practices](https://www.kernel.org/best-way-to-do-linux-clones-for-your-ci.html).
+
+This repository:
+
+- Automates downloading of upstream kernel bundles.
+- Updates them from live git sources.
+- Generates new, optimized shallow bundles for downstream use.
+- Ensures all relevant version tags are included (including `-rc` tags).
+- Executes scheduled daily updates using GitHub Actions and caching mechanisms.
+
+> As of the `5.18.y` series, optimized shallow bundles are ~250 MB — significantly smaller than full clones and much faster to work with.
