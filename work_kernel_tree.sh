@@ -5,9 +5,34 @@ set -e
 function display_alert() {
 	echo "--> $*"
 }
+
+# Retry a (remote) command up to RETRY_MAX_ATTEMPTS times, with an increasing delay
+# between attempts (RETRY_BASE_DELAY, doubling each time). Used to wrap network/git
+# operations against kernel.org, which fail intermittently. Returns the last exit code.
+RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-5}"
+RETRY_BASE_DELAY="${RETRY_BASE_DELAY:-10}"
+function run_with_retries() {
+	local -i attempt=1
+	local -i delay="${RETRY_BASE_DELAY}"
+	local -i rc=0
+	while true; do
+		display_alert "Attempt ${attempt}/${RETRY_MAX_ATTEMPTS}:" "$*"
+		"$@" && return 0
+		rc=$?
+		if [[ ${attempt} -ge ${RETRY_MAX_ATTEMPTS} ]]; then
+			display_alert "Command failed after ${RETRY_MAX_ATTEMPTS} attempts (rc=${rc}):" "$*" "err"
+			return ${rc}
+		fi
+		display_alert "Command failed (rc=${rc}), retrying in ${delay}s:" "$*" "wrn"
+		sleep "${delay}"
+		attempt+=1
+		delay=$((delay * 2))
+	done
+}
+
 echo "::group::Read kernel.org versions"
 # Read the current versions of kernel from kernel.org JSON releases. Again, thanks, kernel.org.
-curl --silent "https://www.kernel.org/releases.json" > /tmp/kernel-releases.json
+run_with_retries curl --fail --silent --output /tmp/kernel-releases.json "https://www.kernel.org/releases.json"
 echo "Kernel releases versions from JSON:"
 cat /tmp/kernel-releases.json | jq -r ".releases[].version"
 
@@ -63,7 +88,7 @@ if ! git config "remote.${GIT_TORVALDS_BUNDLE_REMOTE_NAME}.url"; then
 	# Grab torvald's gitbundle via http from kernel.org
 	if [[ ! -f "${GIT_TORVALDS_BUNDLE_FILE}" ]]; then # Download the bundle file if it does not exist.
 		display_alert "Downloading Git cold bundle via HTTP" "${GIT_TORVALDS_BUNDLE_URL}"
-		wget --continue --progress=dot:giga --output-document="${GIT_TORVALDS_BUNDLE_FILE}" "${GIT_TORVALDS_BUNDLE_URL}"
+		run_with_retries wget --continue --progress=dot:giga --output-document="${GIT_TORVALDS_BUNDLE_FILE}" "${GIT_TORVALDS_BUNDLE_URL}"
 	else
 		display_alert "Cold bundle file exists, using it" "${GIT_TORVALDS_BUNDLE_FILE}" "git"
 	fi
@@ -94,7 +119,7 @@ fi
 # Fetch from it (to update), also bring in the tags. Around a 60mb download, quite fast.
 if [[ "${ONLINE}" == "yes" ]]; then
 	display_alert "Fetching from torvalds live" "${GIT_TORVALDS_LIVE_REMOTE_NAME}"
-	git fetch --progress --verbose --tags "${GIT_TORVALDS_LIVE_REMOTE_NAME}" master # Fetch it! (including tags!)
+	run_with_retries git fetch --progress --verbose --tags "${GIT_TORVALDS_LIVE_REMOTE_NAME}" master # Fetch it! (including tags!)
 	# create a local branch from the fetched
 	display_alert "Creating local branch 'torvalds-master' from torvalds live" "${GIT_TORVALDS_LIVE_REMOTE_NAME}"
 	git branch --force "torvalds-master" FETCH_HEAD
@@ -128,7 +153,7 @@ for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 	# Fetch the branch from the stable live into the local branch. Since I don't specify "--tags", it will only fetch the tags for the branch. Those DON'T include the -rc tags which came from torvalds live
 	if [[ "${ONLINE}" == "yes" ]]; then
 		declare -i STABLE_EXISTS=0
-		git fetch --progress --verbose "${GIT_STABLE_LIVE_REMOTE_NAME}" "${KERNEL_VERSION_REMOTE_BRANCH_NAME}:${KERNEL_VERSION_LOCAL_BRANCH_NAME}" && STABLE_EXISTS=1
+		run_with_retries git fetch --progress --verbose "${GIT_STABLE_LIVE_REMOTE_NAME}" "${KERNEL_VERSION_REMOTE_BRANCH_NAME}:${KERNEL_VERSION_LOCAL_BRANCH_NAME}" && STABLE_EXISTS=1
 		if [[ ${STABLE_EXISTS} -eq 0 ]]; then
 			display_alert "Stable branch does not exist, copying torvalds-master to" "${KERNEL_VERSION_REMOTE_BRANCH_NAME}"
 			git branch --force "${KERNEL_VERSION_LOCAL_BRANCH_NAME}" "torvalds-master"

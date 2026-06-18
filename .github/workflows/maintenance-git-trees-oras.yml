@@ -16,7 +16,7 @@ jobs:
     steps:
 
       - name: Free Github Runner
-        uses: descriptinc/free-disk-space@main
+        uses: descriptinc/free-disk-space@main # no tagged releases; pinned to default branch
         with:
           android: true
           dotnet: true
@@ -24,16 +24,16 @@ jobs:
           large-packages: true
           docker-images: true
           swap-storage: true
-    
+
       - name: Docker Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }} # GitHub username or org
           password: ${{ secrets.GITHUB_TOKEN }}    # GitHub actions builtin token. repo has to have pkg access.
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Keep alive
         uses: liskin/gh-workflow-keepalive@v1
@@ -47,11 +47,14 @@ jobs:
           date > "${TARGET_FULL_FILE_PATH}"
           bash oras_upload.sh
 
-      - name: Cache git worktree
-        uses: actions/cache@v4
+      # Restore the most recent worktree cache. The key is unique per run so that the
+      # matching save step below always writes a fresh cache; restore-keys does a prefix
+      # match to pull in whatever the latest previous run produced.
+      - name: Restore git worktree cache
+        uses: actions/cache/restore@v5
         with:
           path: /tmp/workdir/kernel/worktree
-          key: ${{ runner.os }}-kernel-worktree-${{ github.sha }}
+          key: ${{ runner.os }}-kernel-worktree-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ${{ runner.os }}-kernel-worktree
 
@@ -59,12 +62,25 @@ jobs:
         run: |
           BASE_WORK_DIR="/tmp/workdir" bash work_kernel_tree.sh
 
+      # Save the worktree cache even when the bulk-of-work step above failed (it fails
+      # intermittently due to network issues). This lets the next run continue from the
+      # partial progress instead of starting over. Skipped only on cancellation.
+      - name: Save git worktree cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v5
+        with:
+          path: /tmp/workdir/kernel/worktree
+          key: ${{ runner.os }}-kernel-worktree-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # Publishing steps below have no explicit "if", so they keep the default success()
+      # condition: they only run when every previous step (including the bulk of work)
+      # succeeded. A failed bulk-of-work step therefore skips publishing but still saves cache.
       - name: Upload multiple shallow trees to ghcr.io via ORAS
         env:
           TARGET_OCI_PREFIX: "ghcr.io/${{ github.repository }}/kernel-git-shallow" # :latest
           OUTPUT_BASE: "/tmp/workdir/kernel/output_oras"
         run: |
-          for KERNEL_VERSION in $(cat ${OUTPUT_BASE}/shallow_versions.txt); do 
+          for KERNEL_VERSION in $(cat ${OUTPUT_BASE}/shallow_versions.txt); do
              echo "::group::Pushing ORAS bundle for shallow ${KERNEL_VERSION}"
              echo "version: $KERNEL_VERSION"
              export TARGET_OCI="${TARGET_OCI_PREFIX}-${KERNEL_VERSION}:latest"
@@ -81,4 +97,3 @@ jobs:
           TARGET_FULL_FILE_PATH: "/tmp/workdir/kernel/output_oras/linux-complete.git.tar"
         run: |
           bash oras_upload.sh
-
