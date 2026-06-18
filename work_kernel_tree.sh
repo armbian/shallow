@@ -8,17 +8,24 @@ function display_alert() {
 
 # Retry a (remote) command up to RETRY_MAX_ATTEMPTS times, with an increasing delay
 # between attempts (RETRY_BASE_DELAY, doubling each time). Used to wrap network/git
-# operations against kernel.org, which fail intermittently. Returns the last exit code.
+# operations against kernel.org, which fail intermittently. Each attempt is also bounded
+# by RETRY_TIMEOUT (some operations hang forever instead of failing): when it expires the
+# command is killed (SIGTERM, then SIGKILL after a grace period) and counts as a failure.
+# Returns the last exit code.
 RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-5}"
 RETRY_BASE_DELAY="${RETRY_BASE_DELAY:-10}"
+RETRY_TIMEOUT="${RETRY_TIMEOUT:-600}" # seconds; 10 minutes per attempt
 function run_with_retries() {
 	local -i attempt=1
 	local -i delay="${RETRY_BASE_DELAY}"
 	local -i rc=0
 	while true; do
-		display_alert "Attempt ${attempt}/${RETRY_MAX_ATTEMPTS}:" "$*"
-		"$@" && return 0
+		display_alert "Attempt ${attempt}/${RETRY_MAX_ATTEMPTS} (timeout ${RETRY_TIMEOUT}s):" "$*"
+		timeout --kill-after=30s "${RETRY_TIMEOUT}" "$@" && return 0
 		rc=$?
+		if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
+			display_alert "Command timed out after ${RETRY_TIMEOUT}s (rc=${rc}):" "$*" "wrn"
+		fi
 		if [[ ${attempt} -ge ${RETRY_MAX_ATTEMPTS} ]]; then
 			display_alert "Command failed after ${RETRY_MAX_ATTEMPTS} attempts (rc=${rc}):" "$*" "err"
 			return ${rc}
