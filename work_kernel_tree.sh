@@ -8,23 +8,26 @@ function display_alert() {
 
 # Retry a (remote) command up to RETRY_MAX_ATTEMPTS times, with an increasing delay
 # between attempts (RETRY_BASE_DELAY, doubling each time). Used to wrap network/git
-# operations against kernel.org, which fail intermittently. Each attempt is also bounded
-# by RETRY_TIMEOUT (some operations hang forever instead of failing): when it expires the
-# command is killed (SIGTERM, then SIGKILL after a grace period) and counts as a failure.
-# Returns the last exit code.
+# operations against the kernel mirrors, which fail intermittently. Each attempt is also
+# bounded by a timeout that starts at RETRY_TIMEOUT and doubles every attempt (some
+# operations hang forever instead of failing, and slow local work like "Resolving deltas"
+# can legitimately need more time on later retries). On timeout the command is killed
+# (SIGTERM, then SIGKILL after a grace period) and counts as a failure. Returns the last
+# exit code.
 RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-5}"
 RETRY_BASE_DELAY="${RETRY_BASE_DELAY:-10}"
-RETRY_TIMEOUT="${RETRY_TIMEOUT:-600}" # seconds; 10 minutes per attempt
+RETRY_TIMEOUT="${RETRY_TIMEOUT:-600}" # seconds; 10 minutes for the first attempt, doubling thereafter
 function run_with_retries() {
 	local -i attempt=1
 	local -i delay="${RETRY_BASE_DELAY}"
+	local -i timeout_s="${RETRY_TIMEOUT}"
 	local -i rc=0
 	while true; do
-		display_alert "Attempt ${attempt}/${RETRY_MAX_ATTEMPTS} (timeout ${RETRY_TIMEOUT}s):" "$*"
-		timeout --kill-after=30s "${RETRY_TIMEOUT}" "$@" && return 0
+		display_alert "Attempt ${attempt}/${RETRY_MAX_ATTEMPTS} (timeout ${timeout_s}s):" "$*"
+		timeout --kill-after=30s "${timeout_s}" "$@" && return 0
 		rc=$?
 		if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
-			display_alert "Command timed out after ${RETRY_TIMEOUT}s (rc=${rc}):" "$*" "wrn"
+			display_alert "Command timed out after ${timeout_s}s (rc=${rc}):" "$*" "wrn"
 		fi
 		if [[ ${attempt} -ge ${RETRY_MAX_ATTEMPTS} ]]; then
 			display_alert "Command failed after ${RETRY_MAX_ATTEMPTS} attempts (rc=${rc}):" "$*" "err"
@@ -34,6 +37,7 @@ function run_with_retries() {
 		sleep "${delay}"
 		attempt+=1
 		delay=$((delay * 2))
+		timeout_s=$((timeout_s * 2))
 	done
 }
 
@@ -67,14 +71,36 @@ KERNEL_TORVALDS_BUNDLE_DIR="${WORKDIR}/bundle-torvalds"
 ALL_VERSIONS_FILE="${OUTPUT_DIR_ORAS}/shallow_versions.txt"
 mkdir -p "${BASE_WORK_DIR}" "${WORKDIR}" "${SHALLOWED_TREES_DIR}" "${COMPLETE_TREES_DIR}" "${KERNEL_GIT_TREE}" "${KERNEL_TORVALDS_BUNDLE_DIR}" "${OUTPUT_DIR_ORAS}"
 
+# The cold clone.bundle is always fetched from kernel.org (Google's mirrors are smart-HTTP
+# only and do not serve clone.bundle).
 GIT_TORVALDS_BUNDLE_URL="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/clone.bundle" # Thanks, kernel.org!
 GIT_TORVALDS_BUNDLE_ID="$(echo -n "${GIT_TORVALDS_BUNDLE_URL}" | md5sum | awk '{print $1}')"              # md5 of the URL.
 GIT_TORVALDS_BUNDLE_FILE="${KERNEL_TORVALDS_BUNDLE_DIR}/${GIT_TORVALDS_BUNDLE_ID}.gitbundle"              # final filename of bundle
 GIT_TORVALDS_BUNDLE_REMOTE_NAME="torvalds-gitbundle"                                                      # name of the remote that will point to bundle
-GIT_TORVALDS_LIVE_GIT_URL="git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"              # Torvalds live tree git:// URL
 GIT_TORVALDS_LIVE_REMOTE_NAME="torvalds-live"                                                             # name of the remote that will point to live Torvalds tree
-GIT_STABLE_LIVE_GIT_URL="git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git"           # Stable live tree git:// URL
 GIT_STABLE_LIVE_REMOTE_NAME="stable-live"                                                                 # name of the remote that will point to live stable tree
+
+# Choose where the live torvalds/stable git fetches come from. The cold bundle above is
+# always from kernel.org regardless of this setting.
+#   "google"    -> Google's HTTPS mirrors at kernel.googlesource.com (more reliable).
+#   "kernelorg" -> kernel.org directly over git://.
+GIT_SOURCE="${GIT_SOURCE:-google}"
+case "${GIT_SOURCE}" in
+	google)
+		display_alert "Using Google git mirrors for live fetches" "kernel.googlesource.com"
+		GIT_TORVALDS_LIVE_GIT_URL="https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux.git" # Torvalds live tree HTTPS mirror
+		GIT_STABLE_LIVE_GIT_URL="https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux-stable.git" # Stable live tree HTTPS mirror
+		;;
+	kernelorg)
+		display_alert "Using kernel.org for live fetches" "git.kernel.org"
+		GIT_TORVALDS_LIVE_GIT_URL="git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"  # Torvalds live tree git:// URL
+		GIT_STABLE_LIVE_GIT_URL="git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git" # Stable live tree git:// URL
+		;;
+	*)
+		display_alert "Unknown GIT_SOURCE: '${GIT_SOURCE}'" "use 'google' or 'kernelorg'" "err"
+		exit 1
+		;;
+esac
 
 # 1st stage Global:
 # Init an empty git repo
@@ -117,10 +143,12 @@ echo "::group::Fetching Torvalds live"
 # 2nd stage Global:
 # Add torvalds live git as remote 'torvalds-live'
 if ! git config "remote.${GIT_TORVALDS_LIVE_REMOTE_NAME}.url"; then
-	display_alert "Adding torvalds live remote" "${GIT_TORVALDS_LIVE_REMOTE_NAME}"
+	display_alert "Adding torvalds live remote" "${GIT_TORVALDS_LIVE_REMOTE_NAME}" "${GIT_TORVALDS_LIVE_GIT_URL}"
 	git remote add "${GIT_TORVALDS_LIVE_REMOTE_NAME}" "${GIT_TORVALDS_LIVE_GIT_URL}"
 else
-	display_alert "Torvalds live remote already exists..."
+	# Reconcile the URL in case GIT_SOURCE changed since the cached tree was built.
+	display_alert "Torvalds live remote already exists, setting URL" "${GIT_TORVALDS_LIVE_GIT_URL}"
+	git remote set-url "${GIT_TORVALDS_LIVE_REMOTE_NAME}" "${GIT_TORVALDS_LIVE_GIT_URL}"
 fi
 
 # Fetch from it (to update), also bring in the tags. Around a 60mb download, quite fast.
@@ -136,10 +164,12 @@ echo "::endgroup::"
 echo "::group::Adding stable remote"
 # Now, add the stable remote. Do NOT fetch from it, it's huge and has a lot more than we need.
 if ! git config "remote.${GIT_STABLE_LIVE_REMOTE_NAME}.url"; then
-	display_alert "Adding stable live remote" "${GIT_STABLE_LIVE_REMOTE_NAME}"
+	display_alert "Adding stable live remote" "${GIT_STABLE_LIVE_REMOTE_NAME}" "${GIT_STABLE_LIVE_GIT_URL}"
 	git remote add "${GIT_STABLE_LIVE_REMOTE_NAME}" "${GIT_STABLE_LIVE_GIT_URL}"
 else
-	display_alert "Stable live remote already exists..."
+	# Reconcile the URL in case GIT_SOURCE changed since the cached tree was built.
+	display_alert "Stable live remote already exists, setting URL" "${GIT_STABLE_LIVE_GIT_URL}"
+	git remote set-url "${GIT_STABLE_LIVE_REMOTE_NAME}" "${GIT_STABLE_LIVE_GIT_URL}"
 fi
 echo "::endgroup::"
 
