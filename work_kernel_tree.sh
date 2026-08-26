@@ -2,44 +2,8 @@
 
 set -e
 
-function display_alert() {
-	echo "--> $*"
-}
-
-# Retry a (remote) command up to RETRY_MAX_ATTEMPTS times, with an increasing delay
-# between attempts (RETRY_BASE_DELAY, doubling each time). Used to wrap network/git
-# operations against the kernel mirrors, which fail intermittently. Each attempt is also
-# bounded by a timeout that starts at RETRY_TIMEOUT and doubles every attempt (some
-# operations hang forever instead of failing, and slow local work like "Resolving deltas"
-# can legitimately need more time on later retries). On timeout the command is killed
-# (SIGTERM, then SIGKILL after a grace period) and counts as a failure. Returns the last
-# exit code.
-RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-5}"
-RETRY_BASE_DELAY="${RETRY_BASE_DELAY:-10}"
-RETRY_TIMEOUT="${RETRY_TIMEOUT:-600}" # seconds; 10 minutes for the first attempt, doubling thereafter
-function run_with_retries() {
-	local -i attempt=1
-	local -i delay="${RETRY_BASE_DELAY}"
-	local -i timeout_s="${RETRY_TIMEOUT}"
-	local -i rc=0
-	while true; do
-		display_alert "Attempt ${attempt}/${RETRY_MAX_ATTEMPTS} (timeout ${timeout_s}s):" "$*"
-		timeout --kill-after=30s "${timeout_s}" "$@" && return 0
-		rc=$?
-		if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
-			display_alert "Command timed out after ${timeout_s}s (rc=${rc}):" "$*" "wrn"
-		fi
-		if [[ ${attempt} -ge ${RETRY_MAX_ATTEMPTS} ]]; then
-			display_alert "Command failed after ${RETRY_MAX_ATTEMPTS} attempts (rc=${rc}):" "$*" "err"
-			return ${rc}
-		fi
-		display_alert "Command failed (rc=${rc}), retrying in ${delay}s:" "$*" "wrn"
-		sleep "${delay}"
-		attempt+=1
-		delay=$((delay * 2))
-		timeout_s=$((timeout_s * 2))
-	done
-}
+# shellcheck source=lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 echo "::group::Read kernel.org versions"
 # Read the current versions of kernel from kernel.org JSON releases. Again, thanks, kernel.org.
