@@ -27,7 +27,7 @@ jobs:
       matrix:
 
         # list scripts you want to watch and execute failed jobs x-times
-        script: ["maintenance-git-trees-oras"]
+        script: ["maintenance-git-trees-oras", "maintenance-git-trees-uboot-oras"]
 
     name: R
     runs-on: ubuntu-latest
