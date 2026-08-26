@@ -49,6 +49,7 @@ function run_with_retries() {
 # <outfile> <command...>
 function run_with_retries_capture() {
 	local outfile="${1}" && shift
+	# shellcheck disable=SC2016 # single quotes are the point: $1/$@ must expand in the inner bash
 	run_with_retries bash -c 'out="$1"; shift; "$@" > "${out}"' _ "${outfile}" "$@"
 }
 
