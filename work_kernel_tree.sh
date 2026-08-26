@@ -102,6 +102,17 @@ case "${GIT_SOURCE}" in
 		;;
 esac
 
+# Fallback live mirror, used only if the primary refuses a fetch (e.g. googlesource
+# intermittently returns "INVALID_ARGUMENT: Request contains an invalid argument"). Both
+# mirrors are reached over smart-HTTPS here (git:// is often blocked/flaky).
+if [[ "${GIT_SOURCE}" == "google" ]]; then
+	GIT_TORVALDS_LIVE_GIT_URL_FALLBACK="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+	GIT_STABLE_LIVE_GIT_URL_FALLBACK="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git"
+else
+	GIT_TORVALDS_LIVE_GIT_URL_FALLBACK="https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux.git"
+	GIT_STABLE_LIVE_GIT_URL_FALLBACK="https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux-stable.git"
+fi
+
 # 1st stage Global:
 # Init an empty git repo
 if [[ ! -d "${KERNEL_GIT_TREE}/.git" ]]; then
@@ -154,7 +165,16 @@ fi
 # Fetch from it (to update), also bring in the tags. Around a 60mb download, quite fast.
 if [[ "${ONLINE}" == "yes" ]]; then
 	display_alert "Fetching from torvalds live" "${GIT_TORVALDS_LIVE_REMOTE_NAME}"
-	run_with_retries git fetch --progress --verbose --tags "${GIT_TORVALDS_LIVE_REMOTE_NAME}" master # Fetch it! (including tags!)
+	# Torvalds 'master' always exists, so a fetch failure here is a reliable signal that the
+	# primary mirror is refusing requests. In that case switch the live remotes to the fallback
+	# mirror and retry; the stable remote added below picks up the reassigned URL automatically.
+	if ! run_with_retries git fetch --progress --verbose --tags "${GIT_TORVALDS_LIVE_REMOTE_NAME}" master; then
+		display_alert "Primary live mirror failed, switching to fallback mirror" "${GIT_TORVALDS_LIVE_GIT_URL_FALLBACK}" "wrn"
+		GIT_TORVALDS_LIVE_GIT_URL="${GIT_TORVALDS_LIVE_GIT_URL_FALLBACK}"
+		GIT_STABLE_LIVE_GIT_URL="${GIT_STABLE_LIVE_GIT_URL_FALLBACK}"
+		git remote set-url "${GIT_TORVALDS_LIVE_REMOTE_NAME}" "${GIT_TORVALDS_LIVE_GIT_URL}"
+		run_with_retries git fetch --progress --verbose --tags "${GIT_TORVALDS_LIVE_REMOTE_NAME}" master # retry via fallback
+	fi
 	# create a local branch from the fetched
 	display_alert "Creating local branch 'torvalds-master' from torvalds live" "${GIT_TORVALDS_LIVE_REMOTE_NAME}"
 	git branch --force "torvalds-master" FETCH_HEAD
