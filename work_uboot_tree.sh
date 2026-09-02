@@ -26,6 +26,12 @@ mkdir -p "${WORKDIR}" "${UBOOT_GIT_TREE}" "${OUTPUT_DIR_ORAS}"
 # Mainline u-boot. Everything else is a fork of this, so it is fetched first and its tags are
 # authoritative. github.com is used rather than source.denx.de because it is the mirror the
 # build framework's own default (MAINLINE_UBOOT_SOURCE) points at.
+#
+# Unlike the kernel (see the mirror lists in work_kernel_tree.sh) there is a single source for
+# each u-boot tree: mainline is only ever taken from the mirror the framework itself uses, and
+# a vendor fork exists nowhere but in its vendor's own repo. git_fetch_mirrored() is still what
+# does the fetching -- with a one-entry list it is plain retries against that one URL -- so
+# both trees get the same backoff, timeout and fail-fast-on-a-missing-ref behaviour.
 MAINLINE_UBOOT_URL="${MAINLINE_UBOOT_URL:-"https://github.com/u-boot/u-boot.git"}"
 
 # Vendor forks to seed alongside mainline, as "local_prefix | remote URL | branch glob".
@@ -58,14 +64,13 @@ echo "::endgroup::"
 
 # 1st stage: mainline u-boot -- 'master' plus every tag.
 #
-# The explicit refspec overrides the remote's configured "+refs/heads/*:refs/remotes/mainline/*",
-# so master lands directly in refs/heads and no refs/remotes/* is ever created. "--tags" adds
-# refs/tags/*:refs/tags/* on top: nearly every Armbian board pins BOOTBRANCH to a "tag:vYYYY.MM",
-# so shipping the tags is what makes those builds a cache hit instead of a fetch.
+# The fetch is by URL, so there is no remote whose configured refspec could interfere: the
+# explicit refspec puts master directly in refs/heads and no refs/remotes/* is ever created.
+# "--tags" adds refs/tags/*:refs/tags/* on top: nearly every Armbian board pins BOOTBRANCH to a
+# "tag:vYYYY.MM", so shipping the tags is what makes those builds a cache hit instead of a fetch.
 echo "::group::Fetching mainline u-boot"
 display_alert "Fetching mainline u-boot" "${MAINLINE_UBOOT_URL}"
-git remote add mainline "${MAINLINE_UBOOT_URL}" 2> /dev/null || git remote set-url mainline "${MAINLINE_UBOOT_URL}"
-run_with_retries git fetch --progress --verbose --tags mainline "+refs/heads/master:refs/heads/master"
+git_fetch_mirrored "${MAINLINE_UBOOT_URL}" -- --progress --verbose --tags "+refs/heads/master:refs/heads/master"
 echo "::endgroup::"
 
 # 2nd stage: the vendor forks.
@@ -98,8 +103,6 @@ for entry in "${EXTRA_TREES[@]}"; do
 		exit 1
 	}
 
-	git remote add "${prefix}" "${url}" 2> /dev/null || git remote set-url "${prefix}" "${url}"
-
 	declare -a branches=() refspecs=()
 	ls_remote_out="${WORKDIR}/ls-remote-${prefix}.txt"
 	run_with_retries_capture "${ls_remote_out}" git ls-remote --heads "${url}" "refs/heads/${glob}"
@@ -126,7 +129,7 @@ for entry in "${EXTRA_TREES[@]}"; do
 		refspecs+=("+refs/heads/${one}:refs/heads/${prefix}/${one}")
 	done
 
-	run_with_retries git fetch --progress --verbose --no-tags "${prefix}" "${refspecs[@]}"
+	git_fetch_mirrored "${url}" -- --progress --verbose --no-tags "${refspecs[@]}"
 	echo "::endgroup::"
 done
 
@@ -134,8 +137,9 @@ done
 echo "::group::Post-processing the tree"
 cd "${UBOOT_GIT_TREE}" || exit 2
 
-# The consumer fetches from explicit URLs and never by remote name, so remotes are dead weight
-# that would only confuse anyone poking at the extracted tree.
+# Nothing here adds remotes any more (fetches go by URL), but a tree carried over from an older
+# run of this script still has them, and the consumer fetches from explicit URLs and never by
+# remote name, so they are dead weight that would only confuse anyone poking at the tar.
 for one_remote in $(git remote); do
 	display_alert "Removing remote" "${one_remote}"
 	git remote rm "${one_remote}"
