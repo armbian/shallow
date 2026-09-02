@@ -185,13 +185,12 @@ for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 done
 
 # 4th stage: For each version, eg 5.17
-# - Find the earliest tag with 5.17 in it
-#    - find the _date_ for such a tag
-# - Export a shallow bundle via the date for that version;
+# - Find the commit where that version's history starts: the earliest tag with 5.17-rc in it
+#    - find the _date_ of the commit that tag points at
+# - Export a shallow bundle via that date for that version;
 #   - include the shallow marker file (.git/shallow)
 if [[ "${EXPORT_SHALLOW_PER_VERSION}" == "yes" ]]; then
-	echo "Writing file with all versions: ${ALL_VERSIONS_FILE}"
-	echo "${WANTED_KERNEL_VERSIONS[@]}" > "${ALL_VERSIONS_FILE}"
+	declare -a EXPORTED_KERNEL_VERSIONS=() # only versions that actually produced a tarball; written to ALL_VERSIONS_FILE below
 
 	for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 		echo "::group::Exporting shallow for ${KERNEL_VERSION}"
@@ -205,21 +204,52 @@ if [[ "${EXPORT_SHALLOW_PER_VERSION}" == "yes" ]]; then
 		KERNEL_VERSION_FIRST_RC_TAG_NAME="$(git tag -l | grep "^v$(echo -n "${KERNEL_VERSION}" | sed -e 's/\./\\\./')-rc" | grep -v "\-dontuse" | sort -n | head -1)"
 		display_alert "Found first RC for version:" "${KERNEL_VERSION}" "${KERNEL_VERSION_FIRST_RC_TAG_NAME}"
 
-		# Now translate that tag into a date, which what we're gonna use to shallow the bundle.
-		# Attention: date has timezone part.
-		KERNEL_VERSION_SHALLOW_AT_DATE="$(git tag --list --format="%(creatordate)" "${KERNEL_VERSION_FIRST_RC_TAG_NAME}")"
-		display_alert "Date for first RC tag:" "${KERNEL_VERSION}" "${KERNEL_VERSION_FIRST_RC_TAG_NAME}" "'${KERNEL_VERSION_SHALLOW_AT_DATE}'"
+		# The first -rc tag is the shallow anchor, but during the merge window it can be unusable:
+		# kernel.org's releases.json announces a new version before the git mirrors carry its -rc1
+		# tag, so the tag is either missing entirely or not (yet) an ancestor of what we fetched.
+		# In that case anchor on the newest tag reachable from the branch instead (the previous
+		# release), which yields a slightly bigger, but always valid, tree.
+		KERNEL_VERSION_SHALLOW_ANCHOR_TAG="${KERNEL_VERSION_FIRST_RC_TAG_NAME}"
+		if [[ -z "${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}" ]] || ! git merge-base --is-ancestor "${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}^{commit}" "${KERNEL_VERSION_LOCAL_BRANCH_NAME}"; then
+			KERNEL_VERSION_SHALLOW_ANCHOR_TAG="$(git describe --tags --abbrev=0 --exclude="*dontuse*" "${KERNEL_VERSION_LOCAL_BRANCH_NAME}" 2> /dev/null || true)"
+			display_alert "No usable first RC tag, falling back to newest reachable tag:" "${KERNEL_VERSION}" "'${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}'" "wrn"
+		fi
+
+		# Nothing to anchor on at all: skip the version instead of producing a broken tree.
+		if [[ -z "${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}" ]]; then
+			display_alert "No tag to shallow at, skipping version:" "${KERNEL_VERSION}" "err"
+			echo "::endgroup::"
+			continue
+		fi
+
+		# Now translate that tag into a date, which is what we're gonna use to shallow the bundle.
+		# Use the date of the _commit_ the tag points at, not the tag's own creation date: an
+		# annotated tag is created after its commit, and --shallow-since drops everything older
+		# than the given date, so the tag date excludes the anchor commit itself. When that commit
+		# is the branch tip -- right after -rc1 is tagged, before any further commit lands -- that
+		# leaves nothing at all and git dies with "no commits selected for shallow requests".
+		# One second of slack on top, so the anchor commit is always inside the window.
+		# Epoch (@1234567890) form, to avoid any timezone/format ambiguity.
+		KERNEL_VERSION_SHALLOW_AT_DATE="@$(($(git log -1 --format="%ct" "${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}^{commit}") - 1))"
+		display_alert "Date for shallow anchor tag:" "${KERNEL_VERSION}" "${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}" "'$(git log -1 --format="%ci" "${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}^{commit}")' (${KERNEL_VERSION_SHALLOW_AT_DATE})"
 
 		# Clone from the worktree into a new directory, shallowing in the process. This is the only way to make it consistently shallow without jumping through hoops.
-		KERNEL_VERSION_SHALLOWED_WORKDIR="${SHALLOWED_TREES_DIR}/shallow-${KERNEL_VERSION}-${KERNEL_VERSION_FIRST_RC_TAG_NAME}"
+		KERNEL_VERSION_SHALLOWED_WORKDIR="${SHALLOWED_TREES_DIR}/shallow-${KERNEL_VERSION}-${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}"
 
 		if [[ ! -d "${KERNEL_VERSION_SHALLOWED_WORKDIR}" ]]; then
 			display_alert "Making shallow tree" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
 			# --progress --verbose -- too much output for github actions
-			git clone --no-checkout \
+			if ! git clone --no-checkout \
 				--single-branch --branch="${KERNEL_VERSION_LOCAL_BRANCH_NAME}" \
 				--tags --shallow-since="${KERNEL_VERSION_SHALLOW_AT_DATE}" \
-				"file://${KERNEL_GIT_TREE}" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
+				"file://${KERNEL_GIT_TREE}" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"; then
+				# One broken version should not take the whole daily run down with it; the others
+				# are still worth publishing.
+				display_alert "Shallow clone failed, skipping version:" "${KERNEL_VERSION}" "err"
+				rm -rf "${KERNEL_VERSION_SHALLOWED_WORKDIR}" # git clone cleans up after itself, but make sure
+				echo "::endgroup::"
+				continue
+			fi
 		else
 			display_alert "Shallow tree already exists" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
 		fi
@@ -257,8 +287,15 @@ if [[ "${EXPORT_SHALLOW_PER_VERSION}" == "yes" ]]; then
 		# List the outputs with sizes
 		ls -laht "${OUTPUT_DIR_ORAS}/linux-shallow-${KERNEL_VERSION}".* || true
 
+		EXPORTED_KERNEL_VERSIONS+=("${KERNEL_VERSION}")
+
 		echo "::endgroup::"
 	done
+
+	# Written only now, so skipped versions are not listed: the publishing job iterates this
+	# file and fails on a tarball that does not exist.
+	echo "Writing file with all exported versions: ${ALL_VERSIONS_FILE}"
+	echo "${EXPORTED_KERNEL_VERSIONS[@]}" > "${ALL_VERSIONS_FILE}"
 fi
 
 # 5th stage: export complete tree for the active versions, not shallow.
