@@ -41,41 +41,29 @@ GIT_TORVALDS_BUNDLE_URL="https://git.kernel.org/pub/scm/linux/kernel/git/torvald
 GIT_TORVALDS_BUNDLE_ID="$(echo -n "${GIT_TORVALDS_BUNDLE_URL}" | md5sum | awk '{print $1}')"              # md5 of the URL.
 GIT_TORVALDS_BUNDLE_FILE="${KERNEL_TORVALDS_BUNDLE_DIR}/${GIT_TORVALDS_BUNDLE_ID}.gitbundle"              # final filename of bundle
 GIT_TORVALDS_BUNDLE_REMOTE_NAME="torvalds-gitbundle"                                                      # name of the remote that will point to bundle
-GIT_TORVALDS_LIVE_REMOTE_NAME="torvalds-live"                                                             # name of the remote that will point to live Torvalds tree
-GIT_STABLE_LIVE_REMOTE_NAME="stable-live"                                                                 # name of the remote that will point to live stable tree
 
-# Choose where the live torvalds/stable git fetches come from. The cold bundle above is
-# always from kernel.org regardless of this setting.
-#   "google"    -> Google's HTTPS mirrors at kernel.googlesource.com (more reliable).
-#   "kernelorg" -> kernel.org directly over git://.
-GIT_SOURCE="${GIT_SOURCE:-google}"
-case "${GIT_SOURCE}" in
-	google)
-		display_alert "Using Google git mirrors for live fetches" "kernel.googlesource.com"
-		GIT_TORVALDS_LIVE_GIT_URL="https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux.git" # Torvalds live tree HTTPS mirror
-		GIT_STABLE_LIVE_GIT_URL="https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux-stable.git" # Stable live tree HTTPS mirror
-		;;
-	kernelorg)
-		display_alert "Using kernel.org for live fetches" "git.kernel.org"
-		GIT_TORVALDS_LIVE_GIT_URL="git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"  # Torvalds live tree git:// URL
-		GIT_STABLE_LIVE_GIT_URL="git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git" # Stable live tree git:// URL
-		;;
-	*)
-		display_alert "Unknown GIT_SOURCE: '${GIT_SOURCE}'" "use 'google' or 'kernelorg'" "err"
-		exit 1
-		;;
-esac
-
-# Fallback live mirror, used only if the primary refuses a fetch (e.g. googlesource
-# intermittently returns "INVALID_ARGUMENT: Request contains an invalid argument"). Both
-# mirrors are reached over smart-HTTPS here (git:// is often blocked/flaky).
-if [[ "${GIT_SOURCE}" == "google" ]]; then
-	GIT_TORVALDS_LIVE_GIT_URL_FALLBACK="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
-	GIT_STABLE_LIVE_GIT_URL_FALLBACK="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git"
-else
-	GIT_TORVALDS_LIVE_GIT_URL_FALLBACK="https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux.git"
-	GIT_STABLE_LIVE_GIT_URL_FALLBACK="https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux-stable.git"
-fi
+# Mirrors for the live fetches, in preference order. git_fetch_mirrored() walks down this
+# list as attempts fail, so it is failover across retries rather than a fixed choice, and no
+# named remote is involved: whichever mirror answers is the one we fetched from.
+#
+# kernel.org first, because it is upstream itself and so is never behind. github.com second,
+# a push mirror that trails by seconds. kernel.googlesource.com last: it is the most reliable
+# of the three to talk to, but it syncs on its own schedule and has been seen days late on a
+# fresh -rc1 tag -- which is precisely the tag the shallow export anchors on, so preferring it
+# quietly produced merge-window trees anchored at the previous release.
+# Reached over smart-HTTPS throughout; git:// is often blocked or flaky.
+declare -ag GIT_TORVALDS_MIRRORS=(
+	"https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+	"https://github.com/torvalds/linux.git"
+	"https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux.git"
+)
+# Same order for the stable tree; github.com/gregkh/linux is the linux-stable push mirror and
+# carries the linux-*.y branches at the very same commits.
+declare -ag GIT_STABLE_MIRRORS=(
+	"https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git"
+	"https://github.com/gregkh/linux.git"
+	"https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux-stable.git"
+)
 
 # 1st stage Global:
 # Init an empty git repo
@@ -116,44 +104,15 @@ echo "::endgroup::"
 
 echo "::group::Fetching Torvalds live"
 # 2nd stage Global:
-# Add torvalds live git as remote 'torvalds-live'
-if ! git config "remote.${GIT_TORVALDS_LIVE_REMOTE_NAME}.url"; then
-	display_alert "Adding torvalds live remote" "${GIT_TORVALDS_LIVE_REMOTE_NAME}" "${GIT_TORVALDS_LIVE_GIT_URL}"
-	git remote add "${GIT_TORVALDS_LIVE_REMOTE_NAME}" "${GIT_TORVALDS_LIVE_GIT_URL}"
-else
-	# Reconcile the URL in case GIT_SOURCE changed since the cached tree was built.
-	display_alert "Torvalds live remote already exists, setting URL" "${GIT_TORVALDS_LIVE_GIT_URL}"
-	git remote set-url "${GIT_TORVALDS_LIVE_REMOTE_NAME}" "${GIT_TORVALDS_LIVE_GIT_URL}"
-fi
-
-# Fetch from it (to update), also bring in the tags. Around a 60mb download, quite fast.
+# Fetch torvalds' master plus all the tags -- the -rc tags the shallow export anchors on come
+# from here, not from the stable tree, which is why a mirror lagging on tags matters so much.
+# Around a 60mb download, quite fast.
 if [[ "${ONLINE}" == "yes" ]]; then
-	display_alert "Fetching from torvalds live" "${GIT_TORVALDS_LIVE_REMOTE_NAME}"
-	# Torvalds 'master' always exists, so a fetch failure here is a reliable signal that the
-	# primary mirror is refusing requests. In that case switch the live remotes to the fallback
-	# mirror and retry; the stable remote added below picks up the reassigned URL automatically.
-	if ! run_with_retries git fetch --progress --verbose --tags "${GIT_TORVALDS_LIVE_REMOTE_NAME}" master; then
-		display_alert "Primary live mirror failed, switching to fallback mirror" "${GIT_TORVALDS_LIVE_GIT_URL_FALLBACK}" "wrn"
-		GIT_TORVALDS_LIVE_GIT_URL="${GIT_TORVALDS_LIVE_GIT_URL_FALLBACK}"
-		GIT_STABLE_LIVE_GIT_URL="${GIT_STABLE_LIVE_GIT_URL_FALLBACK}"
-		git remote set-url "${GIT_TORVALDS_LIVE_REMOTE_NAME}" "${GIT_TORVALDS_LIVE_GIT_URL}"
-		run_with_retries git fetch --progress --verbose --tags "${GIT_TORVALDS_LIVE_REMOTE_NAME}" master # retry via fallback
-	fi
+	display_alert "Fetching from torvalds live" "${#GIT_TORVALDS_MIRRORS[@]} mirrors, preferring" "${GIT_TORVALDS_MIRRORS[0]}"
+	git_fetch_mirrored "${GIT_TORVALDS_MIRRORS[@]}" -- --progress --verbose --tags master
 	# create a local branch from the fetched
-	display_alert "Creating local branch 'torvalds-master' from torvalds live" "${GIT_TORVALDS_LIVE_REMOTE_NAME}"
+	display_alert "Creating local branch 'torvalds-master' from torvalds live"
 	git branch --force "torvalds-master" FETCH_HEAD
-fi
-echo "::endgroup::"
-
-echo "::group::Adding stable remote"
-# Now, add the stable remote. Do NOT fetch from it, it's huge and has a lot more than we need.
-if ! git config "remote.${GIT_STABLE_LIVE_REMOTE_NAME}.url"; then
-	display_alert "Adding stable live remote" "${GIT_STABLE_LIVE_REMOTE_NAME}" "${GIT_STABLE_LIVE_GIT_URL}"
-	git remote add "${GIT_STABLE_LIVE_REMOTE_NAME}" "${GIT_STABLE_LIVE_GIT_URL}"
-else
-	# Reconcile the URL in case GIT_SOURCE changed since the cached tree was built.
-	display_alert "Stable live remote already exists, setting URL" "${GIT_STABLE_LIVE_GIT_URL}"
-	git remote set-url "${GIT_STABLE_LIVE_REMOTE_NAME}" "${GIT_STABLE_LIVE_GIT_URL}"
 fi
 echo "::endgroup::"
 
@@ -173,11 +132,23 @@ for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 
 	# Fetch the branch from the stable live into the local branch. Since I don't specify "--tags", it will only fetch the tags for the branch. Those DON'T include the -rc tags which came from torvalds live
 	if [[ "${ONLINE}" == "yes" ]]; then
-		declare -i STABLE_EXISTS=0
-		run_with_retries git fetch --progress --verbose "${GIT_STABLE_LIVE_REMOTE_NAME}" "${KERNEL_VERSION_REMOTE_BRANCH_NAME}:${KERNEL_VERSION_LOCAL_BRANCH_NAME}" && STABLE_EXISTS=1
-		if [[ ${STABLE_EXISTS} -eq 0 ]]; then
+		declare -i STABLE_FETCH_RC=0
+		git_fetch_mirrored "${GIT_STABLE_MIRRORS[@]}" -- --progress --verbose \
+			"${KERNEL_VERSION_REMOTE_BRANCH_NAME}:${KERNEL_VERSION_LOCAL_BRANCH_NAME}" || STABLE_FETCH_RC=$?
+		if [[ ${STABLE_FETCH_RC} -eq ${GIT_FETCH_NO_SUCH_REF} ]]; then
+			# Merge window: upstream has not branched this version off yet, so torvalds' master
+			# _is_ this version. Every mirror agreed on that, it is not one of them lagging.
 			display_alert "Stable branch does not exist, copying torvalds-master to" "${KERNEL_VERSION_REMOTE_BRANCH_NAME}"
 			git branch --force "${KERNEL_VERSION_LOCAL_BRANCH_NAME}" "torvalds-master"
+		elif [[ ${STABLE_FETCH_RC} -ne 0 ]]; then
+			# A fetch that failed for any other reason is no evidence that the branch is gone, so
+			# do NOT overwrite a real stable branch with master here. Keep what the (cached) tree
+			# already has; if it has nothing, the export stage skips the version.
+			if git show-ref --verify --quiet "refs/heads/${KERNEL_VERSION_LOCAL_BRANCH_NAME}"; then
+				display_alert "Stable fetch failed, keeping the branch already in the tree" "${KERNEL_VERSION_LOCAL_BRANCH_NAME}" "wrn"
+			else
+				display_alert "Stable fetch failed and there is no local branch" "${KERNEL_VERSION_LOCAL_BRANCH_NAME}" "err"
+			fi
 		fi
 	fi
 	echo "::endgroup::"
@@ -185,13 +156,12 @@ for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 done
 
 # 4th stage: For each version, eg 5.17
-# - Find the earliest tag with 5.17 in it
-#    - find the _date_ for such a tag
-# - Export a shallow bundle via the date for that version;
+# - Find the commit where that version's history starts: the earliest tag with 5.17-rc in it
+#    - find the _date_ of the commit that tag points at
+# - Export a shallow bundle via that date for that version;
 #   - include the shallow marker file (.git/shallow)
 if [[ "${EXPORT_SHALLOW_PER_VERSION}" == "yes" ]]; then
-	echo "Writing file with all versions: ${ALL_VERSIONS_FILE}"
-	echo "${WANTED_KERNEL_VERSIONS[@]}" > "${ALL_VERSIONS_FILE}"
+	declare -a EXPORTED_KERNEL_VERSIONS=() # only versions that actually produced a tarball; written to ALL_VERSIONS_FILE below
 
 	for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 		echo "::group::Exporting shallow for ${KERNEL_VERSION}"
@@ -205,21 +175,52 @@ if [[ "${EXPORT_SHALLOW_PER_VERSION}" == "yes" ]]; then
 		KERNEL_VERSION_FIRST_RC_TAG_NAME="$(git tag -l | grep "^v$(echo -n "${KERNEL_VERSION}" | sed -e 's/\./\\\./')-rc" | grep -v "\-dontuse" | sort -n | head -1)"
 		display_alert "Found first RC for version:" "${KERNEL_VERSION}" "${KERNEL_VERSION_FIRST_RC_TAG_NAME}"
 
-		# Now translate that tag into a date, which what we're gonna use to shallow the bundle.
-		# Attention: date has timezone part.
-		KERNEL_VERSION_SHALLOW_AT_DATE="$(git tag --list --format="%(creatordate)" "${KERNEL_VERSION_FIRST_RC_TAG_NAME}")"
-		display_alert "Date for first RC tag:" "${KERNEL_VERSION}" "${KERNEL_VERSION_FIRST_RC_TAG_NAME}" "'${KERNEL_VERSION_SHALLOW_AT_DATE}'"
+		# The first -rc tag is the shallow anchor, but during the merge window it can be unusable:
+		# kernel.org's releases.json announces a new version before the git mirrors carry its -rc1
+		# tag, so the tag is either missing entirely or not (yet) an ancestor of what we fetched.
+		# In that case anchor on the newest tag reachable from the branch instead (the previous
+		# release), which yields a slightly bigger, but always valid, tree.
+		KERNEL_VERSION_SHALLOW_ANCHOR_TAG="${KERNEL_VERSION_FIRST_RC_TAG_NAME}"
+		if [[ -z "${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}" ]] || ! git merge-base --is-ancestor "${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}^{commit}" "${KERNEL_VERSION_LOCAL_BRANCH_NAME}"; then
+			KERNEL_VERSION_SHALLOW_ANCHOR_TAG="$(git describe --tags --abbrev=0 --exclude="*dontuse*" "${KERNEL_VERSION_LOCAL_BRANCH_NAME}" 2> /dev/null || true)"
+			display_alert "No usable first RC tag, falling back to newest reachable tag:" "${KERNEL_VERSION}" "'${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}'" "wrn"
+		fi
+
+		# Nothing to anchor on at all: skip the version instead of producing a broken tree.
+		if [[ -z "${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}" ]]; then
+			display_alert "No tag to shallow at, skipping version:" "${KERNEL_VERSION}" "err"
+			echo "::endgroup::"
+			continue
+		fi
+
+		# Now translate that tag into a date, which is what we're gonna use to shallow the bundle.
+		# Use the date of the _commit_ the tag points at, not the tag's own creation date: an
+		# annotated tag is created after its commit, and --shallow-since drops everything older
+		# than the given date, so the tag date excludes the anchor commit itself. When that commit
+		# is the branch tip -- right after -rc1 is tagged, before any further commit lands -- that
+		# leaves nothing at all and git dies with "no commits selected for shallow requests".
+		# One second of slack on top, so the anchor commit is always inside the window.
+		# Epoch (@1234567890) form, to avoid any timezone/format ambiguity.
+		KERNEL_VERSION_SHALLOW_AT_DATE="@$(($(git log -1 --format="%ct" "${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}^{commit}") - 1))"
+		display_alert "Date for shallow anchor tag:" "${KERNEL_VERSION}" "${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}" "'$(git log -1 --format="%ci" "${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}^{commit}")' (${KERNEL_VERSION_SHALLOW_AT_DATE})"
 
 		# Clone from the worktree into a new directory, shallowing in the process. This is the only way to make it consistently shallow without jumping through hoops.
-		KERNEL_VERSION_SHALLOWED_WORKDIR="${SHALLOWED_TREES_DIR}/shallow-${KERNEL_VERSION}-${KERNEL_VERSION_FIRST_RC_TAG_NAME}"
+		KERNEL_VERSION_SHALLOWED_WORKDIR="${SHALLOWED_TREES_DIR}/shallow-${KERNEL_VERSION}-${KERNEL_VERSION_SHALLOW_ANCHOR_TAG}"
 
 		if [[ ! -d "${KERNEL_VERSION_SHALLOWED_WORKDIR}" ]]; then
 			display_alert "Making shallow tree" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
 			# --progress --verbose -- too much output for github actions
-			git clone --no-checkout \
+			if ! git clone --no-checkout \
 				--single-branch --branch="${KERNEL_VERSION_LOCAL_BRANCH_NAME}" \
 				--tags --shallow-since="${KERNEL_VERSION_SHALLOW_AT_DATE}" \
-				"file://${KERNEL_GIT_TREE}" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
+				"file://${KERNEL_GIT_TREE}" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"; then
+				# One broken version should not take the whole daily run down with it; the others
+				# are still worth publishing.
+				display_alert "Shallow clone failed, skipping version:" "${KERNEL_VERSION}" "err"
+				rm -rf "${KERNEL_VERSION_SHALLOWED_WORKDIR}" # git clone cleans up after itself, but make sure
+				echo "::endgroup::"
+				continue
+			fi
 		else
 			display_alert "Shallow tree already exists" "${KERNEL_VERSION_SHALLOWED_WORKDIR}"
 		fi
@@ -257,8 +258,15 @@ if [[ "${EXPORT_SHALLOW_PER_VERSION}" == "yes" ]]; then
 		# List the outputs with sizes
 		ls -laht "${OUTPUT_DIR_ORAS}/linux-shallow-${KERNEL_VERSION}".* || true
 
+		EXPORTED_KERNEL_VERSIONS+=("${KERNEL_VERSION}")
+
 		echo "::endgroup::"
 	done
+
+	# Written only now, so skipped versions are not listed: the publishing job iterates this
+	# file and fails on a tarball that does not exist.
+	echo "Writing file with all exported versions: ${ALL_VERSIONS_FILE}"
+	echo "${EXPORTED_KERNEL_VERSIONS[@]}" > "${ALL_VERSIONS_FILE}"
 fi
 
 # 5th stage: export complete tree for the active versions, not shallow.
@@ -277,6 +285,12 @@ if [[ "${EXPORT_COMPLETE}" == "yes" ]]; then
 	declare -a WANTED_BRANCHES=()
 	for KERNEL_VERSION in "${WANTED_KERNEL_VERSIONS[@]}"; do
 		KERNEL_VERSION_LOCAL_BRANCH_NAME="linux-${KERNEL_VERSION}.y"
+		# A version whose branch never made it into the tree would fail the single fetch below,
+		# taking every other version's branch down with it.
+		if ! git -C "${KERNEL_GIT_TREE}" show-ref --verify --quiet "refs/heads/${KERNEL_VERSION_LOCAL_BRANCH_NAME}"; then
+			display_alert "No local branch, excluding from the complete tree" "${KERNEL_VERSION_LOCAL_BRANCH_NAME}" "wrn"
+			continue
+		fi
 		WANTED_BRANCHES+=("${KERNEL_VERSION_LOCAL_BRANCH_NAME}:${KERNEL_VERSION_LOCAL_BRANCH_NAME}")
 	done
 	# Include a 'master' reference from torvalds-master; this way the produced export has the expected 'master' branch
