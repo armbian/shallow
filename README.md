@@ -7,7 +7,7 @@
 
 ## Purpose of This Repository
 
-This repository automates the preparation and daily publication of **shallow Linux kernel git bundles** and a **combined u-boot git tree**, distributed as OCI artifacts so Armbian's CI/CD (and end-user) builds can bootstrap their kernel and u-boot source trees from a CDN-fronted registry instead of cloning multi-gigabyte upstream repositories.
+This repository automates the preparation and daily publication of **shallow Linux kernel git bundles** and a **combined u-boot git tree**, distributed as OCI artifacts so that Armbian's CI and end-user builds can bootstrap their kernel and u-boot source trees from a CDN-fronted registry instead of cloning multi-gigabyte upstream repositories.
 
 ## Why
 
