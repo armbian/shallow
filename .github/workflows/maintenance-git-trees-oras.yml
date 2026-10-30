@@ -21,9 +21,17 @@ jobs:
           android: true
           dotnet: true
           haskell: true
-          large-packages: true
+          large-packages: false # fixed list fails when a package is missing (e.g. powershell on 26.04)
           docker-images: true
           swap-storage: true
+
+      - name: Remove large packages
+        run: |
+          pkgs=$(dpkg-query -W -f '${Package}\n' | grep -E '^(aspnetcore-|dotnet-|llvm-|php|mongodb-|mysql-)|^(azure-cli|google-chrome-stable|firefox|powershell|mono-devel|libgl1-mesa-dri|google-cloud-sdk|google-cloud-cli)$' || true)
+          [[ -n "$pkgs" ]] && sudo apt-get remove -y $pkgs
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          df -h /
 
       - name: Docker Login to GitHub Container Registry
         uses: docker/login-action@v4
